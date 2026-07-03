@@ -1,0 +1,168 @@
+---
+name: mlx-swift-integration
+description: Port a Python-MLX model into Swift and integrate it into MLXEngine (MLXServeCore/MLXServeEngine) — the Xocialize coordinator that drives MLX-Swift packages but does no inference itself. Use whenever taking an MLX-available model onto Apple Silicon — porting Python-MLX to a Swift-MLX `Core`, wrapping it as a `ModelPackage` (PackageManifest, RequirementsManifest, two-layer license gate, measured split QuantFootprint — resident weights + activation — adopting the 1.14 efficiency contract born-clean), deciding capability-vs-mode-vs-specialty, consuming `mlx-swift-lm`, scaffolding a `-swift` SPM, wiring it into the test app, driving register/prepare/run via `MLXServeEngine` (multi-package per capability via PackageID), or reviewing against the C0–C13 conformance gate. Trigger phrasings — "port to Swift-MLX", "integrate into MLXEngine", "is this package engine-pluggable", "review against C0–C13", "capability vs specialty", "PackageConfiguration". Runs AFTER `mlx-porting` (PyTorch→Python-MLX parity); do NOT use it for that layer-translation step. Supersedes the `mlx-engine` skill.
+---
+
+# Porting a model to Swift-MLX and integrating it into MLXEngine
+
+## Where this sits in the pipeline
+
+```
+PyTorch / Python ──[mlx-porting skill]──► Python-MLX ──┐
+                                                       │  THIS SKILL
+                          ┌────────────────────────────┴───────────────────────────┐
+                          │  Stage 1: port Python-MLX → Swift-MLX (a conformant       │
+                          │           ModelPackage in a -swift SPM)                   │
+                          │  Stage 2: integrate that package into MLXEngine and prove │
+                          │           it in a consuming app                           │
+                          └──────────────────────────────────────────────────────────┘
+```
+
+`mlx-porting` **creates** the MLX port (PyTorch→MLX layer translation, weight conversion,
+Python parity). This skill **takes that result to Swift and into the engine.** If the model
+isn't MLX-available yet, do that first with `mlx-porting`. (A Python-MLX reference that already
+exists upstream — e.g. mflux — counts as "MLX-available": gate the Swift port against IT plus
+PT goldens; no separate Python port needed.)
+
+> **The former `mlx-engine` skill is folded into this one** as
+> `references/engine-contract.md` (capability/mode/specialty, canonical outputs + metaData
+> governance, the C0–C13 summary, contract versioning, reviewer stop-and-ask). The repo-owned
+> spec docs under `~/Development/MLXEngine/EngineeringDocs/MLXEngineDocs/` (architecture.md,
+> capability-contract.md, conformance.md) remain ground truth — when this skill and those
+> disagree, the repo docs + live `MLXToolKit` source win; update this skill's references.
+
+This is a **living lessons file**. Append new gotchas to `references/integration-lessons.md` as
+each port teaches them. Keep heavy, project-specific detail (entitlements, exact versions, the
+full play-by-play) in `~/Development/MLXEngine/EngineeringDocs/CLAUDE.md` and
+`~/Development/MLXEngine/EngineeringDocs/MLXEngineDocs/{first-integration-notes,conformance}.md`. Keep this file the
+fast, reusable workflow + the router to the references.
+
+## When to use / skip
+
+- **Use** when: porting a Python-MLX model to a Swift `Core`, wrapping a model as a `ModelPackage`,
+  writing a `PackageManifest` / `RequirementsManifest`, consuming `mlx-swift-lm`, scaffolding a
+  `-swift` package into the MLXEngine workspace, declaring/measuring footprints, routing
+  downloads into the models folder, or driving `register()` / `prepare()` / `run()` from the
+  app/engine.
+- **Skip** when: doing the PyTorch→MLX port itself (→ `mlx-porting`), or pure contract design of
+  `MLXToolKit` with no model attached.
+
+## Core mental model
+
+1. **MLXEngine is a coordinator, not an engine.** A contribution is ONE `ModelPackage` declaring a
+   `PackageManifest`; the engine constructs / loads / drives / evicts it. The package never
+   constructs or caches itself — inversion of control (C13).
+2. **Two layers, kept apart.** The **contract** (`MLXToolKit` — pure protocols + value types, no
+   heavy deps) vs the **runtime** (`mlx-swift-lm`, Metal, HF). Author against the contract first;
+   add the runtime second. Proving the contract compiles **offline** before pulling the multi-GB
+   MLX/Metal graph keeps every later failure localized to the runtime, not the contract.
+3. **Reuse, don't port.** If the architecture is already in `mlx-swift-lm` (standard LLM/VLM) or you
+   already ported a base, **reuse it** — don't re-translate layers. Only write a Swift `Core` for a
+   novel architecture the runtime can't already load.
+4. **One model, N surfaces = one package.** Declare license / requirements / specialty once on the
+   manifest, dispatch the surfaces inside `run(_:)` on `request.capability`.
+
+## Decide the path first
+
+Before any scaffolding, answer one question: **does `mlx-swift-lm` already load this architecture?**
+
+- **Path A — already loadable (standard LLM / VLM, or a base you already ported).** Skip Stage 1
+  entirely. There is **no Swift `Core` to write** — you reuse the `MLXLLM` / `MLXVLM` loader. Go
+  straight to Stage 2 and wrap the loader as a `ModelPackage`. (The "Reuse, don't port" lesson.)
+- **Path B — novel architecture (audio, diffusion, custom layers `mlx-swift-lm` can't load).** Do
+  Stage 1: port the Python-MLX implementation into a Swift `Core`, then Stage 2 wraps it.
+
+Getting this wrong is the most expensive mistake in the workflow — writing a `Core` for a model the
+runtime already loads is wasted weeks. When unsure, try loading via `mlx-swift-lm` first.
+
+## Stage 1 — Port Python-MLX → Swift `Core` (Path B only)
+
+Produce a **harness-ready, conformant** package: a `-swift` SPM whose `Core` is the ported model and
+whose `ModelPackage` conformer declares the manifest. The deliverable is defined by the conformance
+gate, not by "it runs once."
+
+Read **`references/swift-port-parity.md`** FIRST for the port itself — the phase-gated workflow
+(key contract → component gates → e2e golden → GPU smoke → deltas → quant), the
+Python-MLX↔Swift-MLX numerics doctrine (bit-identical RNG seed streams; bit-exact scalar code;
+the donor lift-vs-translate decision via flattened key paths), the **Metal-watchdog family**
+(CPU-stream weight loads, GPU-stream quantized forwards, never eval giant constant fills,
+ARC-scope big models), and where gates can actually run (CLI gate modes — the SPM test product's
+metallib is unreliable; plain `swift run` does GPU inference fine).
+Read **`references/porting-conformance.md`** for the full topology, the `MLXToolKit` surface you
+implement against, the per-port conformance checklist (C0–C13), and a worked `ModelPackage` example.
+Read **`references/memory-harness.md`** for how to produce the empirical `minUnifiedMemory` every
+variant must declare — peak active unified memory at the input envelope, not weight size.
+
+Stage 1 is done when the package satisfies the conformance gate **and** every variant carries a
+committed memory report. Critically: **offline conformance never runs a kernel.** A green Stage 1
+does not mean the model is correct — the first real forward pass happens in Stage 2's app harness,
+which is where the silent-failure class surfaces (see `references/integration-lessons.md`).
+
+## Stage 2 — Integrate into MLXEngine
+
+```
+1. Confirm availability + license   → mlx-community repo exists (or FoundationModels); BOTH license layers permissive
+2. Scaffold the -swift SPM          → package name carries -swift; module stays clean PascalCase; depends on MLXToolKit
+3. Author the contract side         → Configuration + Manifest + ModelPackage conformer; declare the SPLIT
+                                      footprint + QuantConfigured (+ BudgetAware if there's a dtype lever) NOW,
+                                      born sweep-clean (see below); build OFFLINE vs MLXToolKit + tiny tests
+4. Add the runtime + load/run       → mlx-swift-lm (+ HF stack); implement load()/run(); resolve packages; build
+5. Link into the app + smoke test   → manual Xcode "+"; registration → license gate → load → run (console first)
+6. Storage integration              → download into the chosen models folder + write mlx-package.json marker + refresh panel
+7. Promote to MLXServeCore          → register/admission via MLXServeEngine (multi-package per capability:
+                                      PackageID selection, setDefault, per-request package), then a
+                                      chat/validation UI in the consuming app
+8. Register in the model registry   → add/update the package row in mlx-engine-swift/docs/model-registry.md
+                                      (capability · model · role · home · Avail/Val/Eff/Eng) IN THE SAME
+                                      CHANGE — the registry is maintained by integration, never regenerated
+```
+
+**Never skip step 3 (offline contract build).** Proving the contract compiles before pulling the
+graph is the whole point of the two-layer split.
+
+**Integrate born sweep-clean — adopt the 1.14 efficiency contract AT integration, not as a later
+retrofit.** A freshly-wrapped package should declare the **split footprint** (`residentBytes` weights floor
++ a *measured* `peakActivationBytes`), `QuantConfigured`, `BudgetAware` wherever a quality/dtype lever exists
+(e.g. a near-lossless int8 the engine can drop to under pressure), `unload()` → `MLX.Memory.clearCache()`,
+and mmap/lazy weight load — all in step 3's manifest + load/unload. Doing it now means the package never
+enters the efficiency-sweep backlog (the alternative is a whole separate retrofit pass later). A flat
+`residentBytes` that bakes the activation into residency is the anti-pattern this avoids. The four levers,
+the per-stage-evict pattern for multi-component pipelines, and the measurement traps (in-app `phys_footprint`
+vs smoke MLX-peak ~2.7×; measure the floor **post-load** not post-run; flat-vs-climbing retention) are all in
+**`references/package-efficiency.md`** — read it during step 3, not after.
+
+Step 5 onward is where real bugs live. Drive every package through **one reusable validation
+harness** in the app (model picker → `evict` → `register` → `prepare` (timed) → `run` (timed) →
+decode), capturing load/run seconds, peak process memory, and the engine-charged footprint. **Quantify
+the result — don't trust eyes or ears**; a silent stem reads −∞ dBFS, which is the tell that catches
+a whole class of "looks fine, is wrong" ports.
+
+The full, hard-won detail for every step — `mlx-swift-lm` 3.x pins and load/generate calls, the
+`@InferenceActor` + Sendable rules, Metal API Validation, the silent-failure class, sandbox/storage,
+`MLXServeEngine` admission, version drift — lives in **`references/integration-lessons.md`**. Read it
+before and during integration; append to it after.
+
+## The C0–C13 conformance gate
+
+A port merges only when it passes C0–C13 (each item a reviewable pass/fail — point at the
+C-level, not an opinion). The full summary, the capability/mode/specialty distinction, metaData
+governance, and the reviewer stop-and-ask cases live in **`references/engine-contract.md`**;
+the authoritative enumeration is `~/Development/MLXEngine/EngineeringDocs/MLXEngineDocs/conformance.md`
++ the `MLXServeConformance` target. Highlights: the two-layer license gate (**C7** weight +
+**C8** port-code), **C10** device eligibility, **C12** `@unknown default` on the additive enums,
+**C13** inversion of control (the engine constructs the package, never the reverse).
+
+## Reference router
+
+| Read this | When |
+|---|---|
+| `references/swift-port-parity.md` | Stage 1 — the Python-MLX→Swift-MLX port itself: phase-gated workflow, key contracts, donor lift-vs-translate, cross-binding RNG/bit-exactness, the Metal-watchdog family, CLI gate modes, oracle-gate cross-validation. |
+| `references/porting-conformance.md` | Stage 1 — package topology, the `MLXToolKit` contract surface, the C0–C13 per-port checklist, the worked `ModelPackage` example, discovery/loading expectations. |
+| `references/memory-harness.md` | Producing the empirical `minUnifiedMemory` (C-memory item) for each variant via `MemoryProbe`; the persistent/transient footprint split; how `MemoryGovernor` admits/evicts against it. |
+| `references/package-efficiency.md` | The library-revisit efficiency sweep: declare the split footprint, mmap/lazy weight load, per-stage load→use→evict, `BudgetAware` adaptive dtype. What we ask of every port (paired with the app-side seams in `mlxengine-implementation`). |
+| `references/integration-lessons.md` | Stage 2 — the living gotchas checklist: `mlx-swift-lm` runtime, Metal, silent-failure class, audio/visual wrappers, sandbox/storage, `MLXServeEngine` coordinator, retrieval, version drift, build environment. |
+| `references/engine-contract.md` | Contract design + conformance REVIEW: capability/mode/specialty, canonical outputs, `metaData` governance, parameter planes, the C0–C13 summary, versioning, stop-and-ask. |
+| `~/Development/MLXEngine/mlx-engine-swift/docs/model-registry.md` | The living provider registry — every package's capability/home/availability/validation/efficiency state. Update the package's row as Stage 2 step 8 (it's maintained by integration, not regenerated). |
+| `~/Development/MLXEngine/EngineeringDocs/MLXEngineDocs/conformance.md` | The authoritative C0–C13 enumeration (ground truth for the gate). |
+| `~/Development/MLXEngine/EngineeringDocs/MLXEngineDocs/first-integration-notes.md` | The full first-package play-by-play. |
+| `mlx-porting` skill | The PyTorch/Python → Python-MLX port that this skill consumes. |
