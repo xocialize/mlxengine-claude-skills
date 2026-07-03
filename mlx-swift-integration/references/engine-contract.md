@@ -93,6 +93,14 @@ Turbo vs Lens on `textToImage`) plug into.
 
 Review stance: each item is a reviewable pass/fail — point at the C-level, not an opinion.
 
+Since engine 0.19.0 the gate has an **executable adjunct — the MAT gate** (MAT-1..5): the
+package's own conformance suite runs
+`MLXServeConformance.MaterializationConformance.check(freshConfiguration:satisfiedConfiguration:)`
+to prove the auto-materialization declarations offline — `WeightSourcing` declared, role/repo
+hygiene, honest fresh-machine missing set, explicit-paths-satisfy. It reviews like a C item:
+pass/fail straight from the report. Requirements + the MLXLTX2 reference implementation:
+`references/porting-conformance.md` §4.
+
 ## Versioning the contract
 
 The conformance spec is public API. `Capability`/`Quant` and C-levels are **additive-only at

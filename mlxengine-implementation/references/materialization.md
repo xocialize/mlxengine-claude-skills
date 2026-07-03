@@ -54,7 +54,8 @@ Before an app trusts a package's fresh-machine behavior:
    `MLXServeConformance.MaterializationConformance.check(freshConfiguration:satisfiedConfiguration:)`
    — MAT-1 ModelStorable · MAT-2 declares sources · MAT-3 role/repo hygiene · MAT-4 honest
    fresh-machine missing set · MAT-5 explicit paths satisfy. No network. (Package authors: this is
-   a `mlx-swift-integration` conformance-gate item now.)
+   a `mlx-swift-integration` conformance-gate item — full requirements in that skill's
+   `references/porting-conformance.md` §4.)
 2. **Live measurement** from the area testing app (`MLXEngineTestKit`):
    ```swift
    let run = try await MaterializationBench.run(engine: engine, capability: .textToVideo,
@@ -85,5 +86,7 @@ Before an app trusts a package's fresh-machine behavior:
   layout). Don't chase "prewarm did nothing" on run one.
 
 Cross-refs: [model-store.md](model-store.md) (the folder-grant trick), [progress-and-errors.md](progress-and-errors.md)
-(phase → UI mapping). First conforming package + reference implementation: `MLXLTX2`
-(`LTX2Configuration` WeightSourcing + `WeightMaterializer`, ltx-2-mlx-swift `7ae7aed`).
+(phase → UI mapping). Package-author side (WeightSourcing declaration, load() materialization,
+prewarm resolution, the MAT gate as a per-port requirement): `mlx-swift-integration` skill,
+`references/porting-conformance.md` §4. First conforming package + reference implementation:
+`MLXLTX2` (`LTX2Configuration` WeightSourcing + `WeightMaterializer`, ltx-2-mlx-swift `7ae7aed`).

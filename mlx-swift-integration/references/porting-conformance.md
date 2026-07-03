@@ -78,6 +78,11 @@ against the live `MLXToolKit` source, since the contract version grows (see C-ve
   / `any CapabilityRequest` / `any CapabilityResponse` are `Sendable`, so they cross the engine actor
   cleanly.
 - **`LicensePolicy`** — `.permissiveOnly`; `LicensePolicy.permissiveOnly.evaluate(manifest.license).isAdmitted`.
+- **`WeightSourcing` / `WeightSource`** (engine ≥ 0.19.0) — the `Configuration` declares every
+  fresh-machine network source (`WeightSource{role, repo, revision, matching}`) and computes the
+  still-missing subset via `missingWeightSources(storeRoot:)`. Complements `ModelStorable` (WHERE
+  weights go) with WHAT would be fetched; drives the MAT gate and `load()` auto-materialization —
+  full requirements in section 4.
 
 ## 3. Per-port conformance checklist (C0–C13)
 
@@ -118,6 +123,11 @@ marked "(craft)" are workflow discipline that isn't a numbered C item.
 - **Asset resolution (craft, unnumbered).** Weights/tokenizer/config resolve from the
   `Configuration` (and the engine-stamped `modelsRootDirectory` for `ModelStorable` configs) —
   no hardcoded per-machine paths in the package.
+- **Weight sourcing + auto-materialization (MAT gate, engine ≥ 0.19.0).** The `Configuration`
+  conforms to `WeightSourcing` (quant-aware globs), `load()` auto-materializes missing sources
+  for dir-less configs with progress forwarded via `WeightDownloadProgress`, `prewarmPaths`
+  resolves the store layout, and the package's own conformance suite runs
+  `MaterializationConformance.check` (MAT-1..5, offline). Full requirements in section 4.
 - **Device eligibility (C10).** `DeviceProfile.eligibility(for:)` — required backends present, chip ≥
   floor, OS ≥ min — gates admission at `register`. A variant that can't run on a tier must not claim
   it.
@@ -136,7 +146,59 @@ marked "(craft)" are workflow discipline that isn't a numbered C item.
   whose value populates its `QuantFootprint.residentBytes`. See `memory-harness.md`. (Gen A
   numbered this C13; in Gen B C13 is runtime-governance cooperation / inversion of control.)
 
-## 4. Worked example — a `ModelPackage` conformer
+## 4. Weight sourcing & auto-materialization (engine ≥ 0.19.0 — the MAT gate)
+
+First-run weight downloads are a **package responsibility with an engine-level contract**
+(mlx-engine-swift v0.19.0, `ee65087`): the app only picks a models folder; the package declares
+WHAT it would fetch on a fresh machine and materializes it itself. Every new package conforms
+**born-clean** — same adoption pattern as the 1.14 efficiency contract: build it into Stage 2
+steps 3–4, never as a later retrofit. Explicit-directory configs remain the dev-mode escape hatch
+and **never touch the network** (DEV_ARCHIVE flows stay untouched).
+
+Four requirements:
+
+1. **Declare — conform the `Configuration` to `MLXToolKit.WeightSourcing`.** `weightSources`
+   lists every fresh-machine network source as a `WeightSource(role:repo:revision:matching:)` —
+   `role` is a stable per-source tag ("components", "text-encoder", "transformer-int8") keying
+   progress/measurement/UI; `repo` is `org/name`; `matching` globs select files within the repo
+   (nil/empty = whole snapshot). Multi-source packages are normal. **Quant-tiered configs must
+   EXCLUDE files their quant doesn't need from the globs** — MLXLTX2's int8/int4 configs exclude
+   the 35 GB bf16 transformer from the components glob and add a `transformer-<quant>` source
+   instead. `missingWeightSources(storeRoot:)` computes the still-missing subset: honor the
+   configuration's **explicit local paths first**, then probe the ModelStore layout
+   (`<root>/<org>/<name>/…`); nil store + no explicit paths ⇒ everything missing.
+2. **Execute — `load()` auto-materializes.** When explicit dirs are nil and the engine stamped a
+   store root, `load()` downloads the missing sources into the store layout with a **native**
+   downloader (swift-huggingface `HubClient.downloadSnapshot(of:to:revision:matching:)`; env-detected
+   `HF_TOKEN` covers gated repos), forwarding per-file progress via
+   `WeightDownloadProgress.report(fraction:bytesPerSecond:)` so the engine's `PreparationMonitor`
+   surfaces `.downloading`. **A download the monitor can't see is a conformance smell** — users get
+   a dead spinner, and the live `MaterializationRun` bench flags it as `downloadPhase=NO`.
+   Download sources sequentially, mapping source *i* of *n* onto fraction `[i/n, (i+1)/n)` so one
+   progress bar stays monotonic. Then load from the store-resolved view of the configuration
+   (MLXLTX2's `resolved(storeRoot:)` maps nil dirs onto the store; explicit dirs always win).
+3. **Prove — MAT-1..5 in the package's own conformance suite.** Next to the C0–C13 gate tests, run
+   `MLXServeConformance.MaterializationConformance.check(freshConfiguration:satisfiedConfiguration:)`
+   — offline, no network, no weights: **MAT-1** ModelStorable · **MAT-2** non-empty source
+   declaration · **MAT-3** role/repo hygiene (unique roles, `org/name` repos) · **MAT-4** honest
+   fresh-machine missing set (nil store ⇒ ALL sources missing) · **MAT-5** explicit paths satisfy
+   (tiny probe files in a temp dir make the satisfied config). Assert `report.passed` with
+   `report.summary` as the failure message, and run it **per selectable quant tier** — the
+   declaration changes with the quant.
+4. **Prewarm — `prewarmPaths` resolves the store.** For nil-dir configs, `WeightPrewarming`'s
+   `prewarmPaths` must resolve against the store layout so the engine's `WeightPrewarmer` pays off
+   from the SECOND cold launch on downloaded weights (first launch is a no-op — nothing on disk
+   yet; missing paths skip).
+
+**Reference implementation:** MLXLTX2 (`~/Development/mlxengine-video-ltx/LTX_DEV/ltx-2-mlx-swift`,
+`7ae7aed`) — the `LTX2Configuration` `WeightSourcing` extension (+ `resolved(storeRoot:)`),
+`Sources/MLXLTX2/WeightMaterializer.swift`, and `Tests/MLXLTX2Tests/MaterializationTests.swift`.
+The consumer/app side — folder pick, `needsDownload` routing, progress UI, and the live
+`MaterializationBench` measurement whose `[MAT]` logLine is the registry's Val evidence for
+first-run behavior — is documented in the `mlxengine-implementation` skill's
+`references/materialization.md`.
+
+## 5. Worked example — a `ModelPackage` conformer
 
 Built on the real Gen-B signatures. The model graph stays in `<Name>Core` (Path B) or is the reused
 `MLXLLM`/`MLXVLM` loader (Path A); the conformer below is the thin declaration layer — aim for this
@@ -208,7 +270,7 @@ public final class QwenImageEditPackage: ModelPackage {
 What *didn't* move into the conformer: the RoFormer/Demucs graph stays in `*Core`. The conformer is
 ~40 lines of declaration + dispatch. That ratio is the target for every port.
 
-## 5. Discovery & "dynamic" loading on Apple platforms (set expectations)
+## 6. Discovery & "dynamic" loading on Apple platforms (set expectations)
 
 There is **no `dlopen` of arbitrary signed SPMs** under sandbox/notarization. "Loaded as needed" is
 realized as three independent axes, not runtime plugin loading:
@@ -224,12 +286,13 @@ realized as three independent axes, not runtime plugin loading:
 True out-of-process / third-party tools are a future transport concern handled by the engine's
 bridge with the same manifests — never by changing `Core` or the conformer.
 
-## 6. Definition of done (per port)
+## 7. Definition of done (per port)
 
 A port is harness-ready when: it's a `-swift` SPM with a transport-free default product; exactly one
 `ModelPackage` declares the manifest and registration; lifecycle is host-owned with no internal
 caching; every variant declares `license` + `minUnifiedMemory` + assets; the license gate is
 two-layer; `run(_:)` dispatches on capability and never throws non-`PackageError` across the
-boundary; and **elementwise parity + a committed memory report** pass on at least one admissible
-tier. At that point Stage 2 integration is a single `register(registration, configuration)` call
-into `MLXServeEngine`.
+boundary; the `Configuration` declares `WeightSourcing` and the package's suite passes the offline
+**MAT-1..5 gate** (section 4); and **elementwise parity + a committed memory report** pass on at
+least one admissible tier. At that point Stage 2 integration is a single
+`register(registration, configuration)` call into `MLXServeEngine`.

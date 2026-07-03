@@ -1,6 +1,6 @@
 ---
 name: mlx-swift-integration
-description: Port a Python-MLX model into Swift and integrate it into MLXEngine (MLXServeCore/MLXServeEngine) — the Xocialize coordinator that drives MLX-Swift packages but does no inference itself. Use whenever taking an MLX-available model onto Apple Silicon — porting Python-MLX to a Swift-MLX `Core`, wrapping it as a `ModelPackage` (PackageManifest, RequirementsManifest, two-layer license gate, measured split QuantFootprint — resident weights + activation — adopting the 1.14 efficiency contract born-clean), deciding capability-vs-mode-vs-specialty, consuming `mlx-swift-lm`, scaffolding a `-swift` SPM, wiring it into the test app, driving register/prepare/run via `MLXServeEngine` (multi-package per capability via PackageID), or reviewing against the C0–C13 conformance gate. Trigger phrasings — "port to Swift-MLX", "integrate into MLXEngine", "is this package engine-pluggable", "review against C0–C13", "capability vs specialty", "PackageConfiguration". Runs AFTER `mlx-porting` (PyTorch→Python-MLX parity); do NOT use it for that layer-translation step. Supersedes the `mlx-engine` skill.
+description: Port a Python-MLX model into Swift and integrate it into MLXEngine (MLXServeCore/MLXServeEngine) — the Xocialize coordinator that drives MLX-Swift packages but does no inference itself. Use whenever taking an MLX-available model onto Apple Silicon — porting Python-MLX to a Swift-MLX `Core`, wrapping it as a `ModelPackage` (PackageManifest, RequirementsManifest, two-layer license gate, measured split QuantFootprint — resident weights + activation — adopting the 1.14 efficiency contract AND the 0.19.0 WeightSourcing auto-materialization/MAT gate born-clean), deciding capability-vs-mode-vs-specialty, consuming `mlx-swift-lm`, scaffolding a `-swift` SPM, wiring it into the test app, driving register/prepare/run via `MLXServeEngine` (multi-package per capability via PackageID), or reviewing against the C0–C13 conformance gate. Trigger phrasings — "port to Swift-MLX", "integrate into MLXEngine", "is this package engine-pluggable", "review against C0–C13", "capability vs specialty", "PackageConfiguration", "WeightSourcing", "MAT gate", "auto-materialize weights". Runs AFTER `mlx-porting` (PyTorch→Python-MLX parity); do NOT use it for that layer-translation step. Supersedes the `mlx-engine` skill.
 ---
 
 # Porting a model to Swift-MLX and integrating it into MLXEngine
@@ -105,8 +105,10 @@ which is where the silent-failure class surfaces (see `references/integration-le
 2. Scaffold the -swift SPM          → package name carries -swift; module stays clean PascalCase; depends on MLXToolKit
 3. Author the contract side         → Configuration + Manifest + ModelPackage conformer; declare the SPLIT
                                       footprint + QuantConfigured (+ BudgetAware if there's a dtype lever) NOW,
-                                      born sweep-clean (see below); build OFFLINE vs MLXToolKit + tiny tests
-4. Add the runtime + load/run       → mlx-swift-lm (+ HF stack); implement load()/run(); resolve packages; build
+                                      born sweep-clean, + WeightSourcing sources (quant-aware globs), born
+                                      materialization-clean (see below); build OFFLINE vs MLXToolKit + tiny tests
+4. Add the runtime + load/run       → mlx-swift-lm (+ HF stack); implement load()/run() — load() auto-materializes
+                                      dir-less configs from the declared sources (v0.19.0); resolve packages; build
 5. Link into the app + smoke test   → manual Xcode "+"; registration → license gate → load → run (console first)
 6. Storage integration              → download into the chosen models folder + write mlx-package.json marker + refresh panel
 7. Promote to MLXServeCore          → register/admission via MLXServeEngine (multi-package per capability:
@@ -131,6 +133,20 @@ the per-stage-evict pattern for multi-component pipelines, and the measurement t
 vs smoke MLX-peak ~2.7×; measure the floor **post-load** not post-run; flat-vs-climbing retention) are all in
 **`references/package-efficiency.md`** — read it during step 3, not after.
 
+**Integrate born materialization-clean too — the v0.19.0 auto-materialization contract adopts the
+same way.** In step 3 the `Configuration` conforms to `MLXToolKit.WeightSourcing` — declare every
+fresh-machine weight source (`WeightSource{role, repo, revision, matching globs}`; quant-tiered
+configs EXCLUDE files their quant doesn't need) and implement `missingWeightSources(storeRoot:)`
+(explicit local paths first, then the ModelStore `<root>/<org>/<name>` layout). In step 4 `load()`
+auto-materializes missing sources into the store layout when explicit dirs are nil (native
+downloader, per-file progress via `WeightDownloadProgress.report` so the engine surfaces
+`.downloading` — a silent download is a conformance smell), and `prewarmPaths` resolves against
+the store so later cold launches prewarm downloaded weights. The package's own suite runs the
+offline **MAT-1..5** gate next to its C0–C13 tests. Full requirements + the MLXLTX2 reference
+implementation: **`references/porting-conformance.md` §4**; the consumer/app side (folder pick,
+`needsDownload` routing, progress UI, live `MaterializationBench`) is the `mlxengine-implementation`
+skill's `references/materialization.md`.
+
 Step 5 onward is where real bugs live. Drive every package through **one reusable validation
 harness** in the app (model picker → `evict` → `register` → `prepare` (timed) → `run` (timed) →
 decode), capturing load/run seconds, peak process memory, and the engine-charged footprint. **Quantify
@@ -150,18 +166,22 @@ governance, and the reviewer stop-and-ask cases live in **`references/engine-con
 the authoritative enumeration is `~/Development/MLXEngine/EngineeringDocs/MLXEngineDocs/conformance.md`
 + the `MLXServeConformance` target. Highlights: the two-layer license gate (**C7** weight +
 **C8** port-code), **C10** device eligibility, **C12** `@unknown default` on the additive enums,
-**C13** inversion of control (the engine constructs the package, never the reverse).
+**C13** inversion of control (the engine constructs the package, never the reverse). Since engine
+0.19.0 the gate has an executable adjunct — the **MAT gate** (MAT-1..5, offline): the package's
+own suite runs `MLXServeConformance.MaterializationConformance.check(…)` to prove its
+`WeightSourcing` auto-materialization declarations (`references/porting-conformance.md` §4).
 
 ## Reference router
 
 | Read this | When |
 |---|---|
 | `references/swift-port-parity.md` | Stage 1 — the Python-MLX→Swift-MLX port itself: phase-gated workflow, key contracts, donor lift-vs-translate, cross-binding RNG/bit-exactness, the Metal-watchdog family, CLI gate modes, oracle-gate cross-validation. |
-| `references/porting-conformance.md` | Stage 1 — package topology, the `MLXToolKit` contract surface, the C0–C13 per-port checklist, the worked `ModelPackage` example, discovery/loading expectations. |
+| `references/porting-conformance.md` | Stage 1 — package topology, the `MLXToolKit` contract surface, the C0–C13 per-port checklist, the v0.19.0 `WeightSourcing` auto-materialization requirements + MAT gate (§4), the worked `ModelPackage` example, discovery/loading expectations. |
 | `references/memory-harness.md` | Producing the empirical `minUnifiedMemory` (C-memory item) for each variant via `MemoryProbe`; the persistent/transient footprint split; how `MemoryGovernor` admits/evicts against it. |
 | `references/package-efficiency.md` | The library-revisit efficiency sweep: declare the split footprint, mmap/lazy weight load, per-stage load→use→evict, `BudgetAware` adaptive dtype. What we ask of every port (paired with the app-side seams in `mlxengine-implementation`). |
 | `references/integration-lessons.md` | Stage 2 — the living gotchas checklist: `mlx-swift-lm` runtime, Metal, silent-failure class, audio/visual wrappers, sandbox/storage, `MLXServeEngine` coordinator, retrieval, version drift, build environment. |
 | `references/engine-contract.md` | Contract design + conformance REVIEW: capability/mode/specialty, canonical outputs, `metaData` governance, parameter planes, the C0–C13 summary, versioning, stop-and-ask. |
+| `mlxengine-implementation` skill → `references/materialization.md` | The CONSUMER/app side of v0.19.0 auto-materialization — folder pick, `needsDownload` routing, progress UI, the live `MaterializationBench` `[MAT]` measurement. Package-author requirements live here in `porting-conformance.md` §4. |
 | `~/Development/MLXEngine/mlx-engine-swift/docs/model-registry.md` | The living provider registry — every package's capability/home/availability/validation/efficiency state. Update the package's row as Stage 2 step 8 (it's maintained by integration, not regenerated). |
 | `~/Development/MLXEngine/EngineeringDocs/MLXEngineDocs/conformance.md` | The authoritative C0–C13 enumeration (ground truth for the gate). |
 | `~/Development/MLXEngine/EngineeringDocs/MLXEngineDocs/first-integration-notes.md` | The full first-package play-by-play. |
