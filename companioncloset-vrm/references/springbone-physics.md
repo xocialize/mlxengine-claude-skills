@@ -236,13 +236,19 @@ on girl-base, multiply `stiffness`/`hitRadius` and collider `radius`/`tail` by (
 already in base meters → no correction needed). This is a decision input for the imported-hair-physics
 work: synthesizing in base scale sidesteps the scale-correction entirely.
 
-**SkinTokens** (VAST-AI-Research, MIT, arXiv 2602.04805) — the auto-rigging engine behind our
-**garment-rig aspiration (roadmap T3.3)**. GLB mesh in → **skeleton hierarchy + per-vertex skin
-weights** out (FSQ-CVAE weight tokenizer + TokenRig autoregressive, Qwen3-0.6B backbone; RL-refined).
-Now RELEASED (MIT, pretrained weights on HF: `articulation_xl_quantization_256_token_4` +
-`skin_vae_2_10_32768`). **Predicts weights + skeleton ONLY — NO physics / spring bones / dynamic
-motion / hair-strand rigging**, so spring params still come from the cloth/hair profile tables above.
-**Stack constraint:** CUDA-only (NVIDIA ≥14 GB VRAM, CUDA 12.1, PyTorch 2.7, flash-attn) — off our
-Apple-Silicon/MLX line. Using it = a CUDA box or an MLX port (mirrors the TRELLIS situation); the
-on-device path for fitted garments stays **proximity weight-transfer** (roadmap P2). Relevant to the
-GARMENT-rig lane, NOT to hair physics (head-anchor / preserved-source-springs need no weight predictor).
+**SkinTokens** (VAST-AI-Research, MIT, arXiv 2602.04805) — the auto-rigging engine for our
+**garment-rig lane (T3.3)**. GLB mesh in → **skeleton + per-vertex skin weights** out (FSQ-CVAE
+weight tokenizer + grammar-constrained beam TokenRig on a Qwen3-0.6B backbone).
+**✅ ALREADY PORTED TO SWIFT-MLX (on-device, NOT CUDA)** — `~/Development/mlxengine-3d/DEV/SkinTokensDev`,
+package `mlx-skintokens-swift`, engine capability `meshRig`; memory `skintokens-autorig-candidate`
+(mlxengine-3d scope). P0 Python oracle (CPU, SDPA-patched) + P1 Swift-MLX core done: S0→S2b parity
+ladder PASSED and **first END-TO-END done 2026-07-10 — real GLB → rigged GLB**. Pipeline: SamplerMix
+54k pts → Michelangelo encoder → SkinVAE cond → beam(10) TokenRig → FSQ decode → per-point skin →
+**cKDTree propagate to the ORIGINAL glTF verts → inject JOINTS_0/WEIGHTS_0** (vertex identity
+preserved — fits our extract/wear convention directly). **Route B conditions on OUR VRoid skeleton**
+(`configs/skeleton/vroid.yaml` = the J_Bip bone list; `vroid` is a TRAINED cls token) → predicts
+weights for the girl-base/N00 template = exactly what T3.3 needs. So the on-device neural garment
+rigger EXISTS (complements the proximity-transfer path P2, likely exceeds it for OOD garments).
+**Boundary:** skeleton + weights only — **NO physics / spring bones**, so spring params still come
+from the cloth/hair profile tables above, and it does NOT help hair physics (head-anchor /
+preserved-source-springs need no weight predictor).
