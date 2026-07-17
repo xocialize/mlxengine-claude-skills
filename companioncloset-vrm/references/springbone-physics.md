@@ -202,3 +202,36 @@ a generated garment to a skeleton).
 motion) was **"Coming Soon" / unreleased** as of ~2026-07. So even with UniRig producing a
 skeleton, the spring **parameters** still need heuristics or hand-tuning (use the cloth-type table
 above). Re-check UniRig for a physics-attribute release before assuming it's available.
+
+## Authoritative sources (VRMC_springBone-1.0 spec + three-vrm), verified 2026-07-17
+
+Spec: `vrm-c/vrm-specification/.../VRMC_springBone-1.0`. three-vrm impl + guides.
+
+**Coordinate space / units (from the spec):**
+- Joint positions simulate in **WORLD** coordinates; collider offsets/shapes are in the target
+  node's **LOCAL** coordinates. All distances in **meters**.
+- Sphere collider = offset + radius (local). Capsule = offset (start) + tail (end) + shared radius.
+- Simulation = **Verlet**, three forces: inertia (prev velocity × `(1 − dragForce)`), stiffness
+  (restore toward rest), gravity (`gravityPower` along `gravityDir`). Root→descendants order:
+  compute next tail → constrain bone length → resolve collisions → update rotation.
+
+**`center` node (locomotion-inertia control):**
+- `center` MUST be the chain's **0th joint or an ancestor** of it.
+- **Inertia is evaluated in center-space**; **gravity is always world-space**. Setting center on a
+  moving parent makes the chain "shake too much when walking/running" go away.
+- For HAIR: **center = Head** (rides head motion, no locomotion whip). For skirts: center = Hips.
+  This validates the T3.4 profiles.
+
+**⚠ Scale gotcha (three-vrm `spring-bones-on-scaled-models`): spring bones do NOT auto-scale.**
+When a model or its bones are scaled by `s`, you MUST manually scale params or the hair reacts
+too fast/slow and colliders misbehave:
+```js
+for (const j of vrm.springBoneManager.joints) { j.settings.stiffness *= s; j.settings.hitRadius *= s; }
+for (const c of vrm.springBoneManager.colliders) { c.shape.radius *= s; c.shape.tail?.multiplyScalar(s); }
+```
+**Relevance to imported hair:** the compatibility gate admits donors at 82–120% of base height. If
+imported-hair springs are authored at the donor's scale (approach A, preserve source rig) and worn
+on girl-base, multiply `stiffness`/`hitRadius` and collider `radius`/`tail` by (baseScale/donorScale)
+— OR author/synthesize the springs directly in girl-base's metric scale (approach B, `synthesize_hair`,
+already in base meters → no correction needed). This is a decision input for the imported-hair-physics
+work: synthesizing in base scale sidesteps the scale-correction entirely.
