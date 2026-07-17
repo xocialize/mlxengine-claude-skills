@@ -12,7 +12,7 @@ the same (the #1 source of "hair exploded / outfit backwards" bugs):
 | Tier | Rigging | Extractor | Notes |
 |---|---|---|---|
 | **Garment** | multi-bone body skin, driven by the base rig | `extractItems.js` | tops/dresses/skirts/bottoms/shoes |
-| **Hair** | rigid 1.0 bind to the HEAD bone | `hairAnchor.js` | hair spring bones don't exist on a bald base → puppet explodes it |
+| **Hair** | donor hair spring bones, rest-corrected into base-head frame (rigid 1.0 fallback) | `hairAnchor.js` | source hair springs sit on the HEAD — the one bone whose base rest differs (permutation) → naïve wear explodes; corrected + re-baselined |
 | **Accessory** | rigid 1.0 bind to ONE named anchor bone | `axf/anchor_item.py` | hats/brooches/ties; complex assemblies compose externally |
 
 ## The wear puppet (garments)
@@ -60,9 +60,43 @@ corrections make placement + orientation right:
    keeping its authored world orientation.
 
 Result: `v(t) = headBone(t) · baseHeadRest⁻¹ · (v_src + Δ)` — at rest the hair keeps source
-orientation at the base head; during animation it follows the head. Rigid (no strand physics
-yet — head springs are a later nicety). Head-anchoring is source-rig-independent (only needs
-the head bone) so it also absorbs cross-avatar head position automatically.
+orientation at the base head; during animation it follows the head. Head-anchoring is source-rig-
+independent (only needs the head bone) so it also absorbs cross-avatar head position automatically.
+
+## Hair PHYSICS — preserving the donor's spring bones (`extractHairRigged`, F-drop3 complete)
+
+`extractHairRigged` makes imported hair **sway** instead of tracking rigidly, browser-native, by
+**preserving the donor's own hair spring bones** rather than collapsing to the single-joint rigid
+bind (which stays the fallback when a donor has no hair springs). The recipe — every skin influence
+must contribute exactly `T(Δ)` at rest so the mesh reproduces the rigid F-drop3 framing, then springs
+deviate under motion:
+
+- **Head-weighted verts** → IBM `= baseHeadWorld⁻¹ · T(Δ)` (the rigid anchor's IBM — absorbs the
+  axis-permuted base head).
+- **Hair-chain verts** → keep donor IBMs; re-author each chain **root's** local under the head to
+  `baseHeadWorld⁻¹ · T(Δ) · bindWorld_root` (descendants keep donor locals — a pure translation
+  preserves relative transforms), so every hair bone lands at `T(Δ)·bindWorld_i`.
+- **Everything else** (back-hair verts weighted to body spring bones, etc.) → redirect to the head
+  slot (rigid). No dependency on un-driven body bones ⇒ can't explode.
+- Carry the donor `VRMC_springBone` hair chains **verbatim** (node indices stay valid via the
+  full-hierarchy copy; tuning preserved), `center = null` (world space, like `hair.glb` — maximises
+  head-turn swing), **no colliders** (`hair.glb` proves none needed; a synthesized skull sphere shoves
+  close side-locks out).
+
+**Two runtime pieces make it work (both in `createViewer.wearItem`):**
+1. **Re-baseline at wear** — the springs' rest is captured at load in the donor head frame, but the
+   puppet then drives the head to girl-base's permuted frame → first-frame jump (the original
+   explosion). After the item is added, puppet-copy the base locals once, `root.updateWorldMatrix
+   (true,true)`, then `springManager.setInitState()` + `reset()` → rest re-captured at the base pose.
+   No-op for same-lineage items (`hair.glb`, garments).
+2. **Exclude spring bones from the puppet** — the puppet pairs bones **by name**, and girl-base ships
+   its own 12 `J_Sec_Hair*` chains, so a donor's same-named hair chains get snapped to girl-base's
+   hair rest and the physics is overridden (side-locks stick out at head height). Skip any bone in
+   `springManager.joints[].bone` when pairing; its parent (the head) is still puppeted.
+
+Verified on donor 9128: rest error 0.0 m vs F-drop3 framing; joints swing ~51° (Looking Around) and
+flare/lift under Cross Jumps; no explosion; `hair.glb` unregressed. See
+`vroid-xwear-interop/docs/imported-hair-physics.md`.
 
 ## Traps (each cost a debugging session)
 
@@ -72,6 +106,15 @@ the head bone) so it also absorbs cross-avatar head position automatically.
   backwards. The puppet can't fix it; the correct fix is an LBS rebake into the base bind pose
   (`axf/dressup_compose.py`, R=diag(−1,1,−1)). In-app 0.x is GATED to the Python lane.
 - **Head axis permutation** (above) — girl-base's head rest is not identity.
+- **Puppet name-collision on spring bones**: the puppet pairs item↔base bones by NAME, and girl-base
+  carries its own `J_Sec_Hair*` chains — so an imported hair item's same-named chains get puppet-driven
+  to girl-base's hair rest, overriding their physics (side-locks stick out at head height). Exclude the
+  item's own `springManager.joints[].bone` from the pairing; spring joints belong to the spring manager,
+  never the puppet. General rule for any item whose spring-bone names might exist on the base.
+- **Spring rest captured before the puppet moves the head**: worn hair chains hang off the head; their
+  spring rest is sampled at load in the donor frame, then the puppet drives the head to the base frame
+  → first-frame jump/explosion. `springManager.setInitState()` after one puppet pass re-baselines the
+  rest at the base pose. Harmless for same-lineage items.
 - **Cross-avatar fit**: even a correctly-oriented VRM1 garment fits loosely if the donor body
   differs — inherent, hence the compatibility gate.
 - **Outfit persistence**: `loadFile` resets the worn set on every model load; persist on

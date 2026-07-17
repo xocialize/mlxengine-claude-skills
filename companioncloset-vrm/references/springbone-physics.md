@@ -89,6 +89,15 @@ three force terms are **summed in a single Verlet step**, not applied sequential
 You rarely call this yourself; you call `vrm.update(delta)` in the render loop and three-vrm drives
 the manager. Your job is authoring correct chains/colliders in the data.
 
+**`setInitState()` — re-baselining rest at a driven pose.** `VRMSpringBoneManager.setInitState()`
+(public, three-vrm 3.x) re-captures every joint's initial local matrix/rotation and its
+`_currentTail`/`_prevTail` from the bones' **current** world matrices. This is the fix for a worn
+spring chain whose parent (e.g. a puppet-driven head) is at a *different* transform at runtime than at
+load: the rest was sampled at load, so the first frame jumps and can explode the mesh. Sequence:
+puppet the parent chain once → `root.updateWorldMatrix(true, true)` → `manager.setInitState()` →
+`manager.reset()`. Note `setInitState()`/`reset()` do NOT refresh ancestor world matrices themselves —
+update them first. See wear-runtime.md (imported-hair physics).
+
 ## Synthesizing bones for a generated garment
 
 A TRELLIS-generated skirt/hair mesh arrives with **no bones**. To give it physics you procedurally
@@ -142,7 +151,11 @@ starting points, not sourced presets. Tune with real motion.
 - **Flowing skirt (light fabric):** low `stiffness`, low–mid `dragForce`, moderate `gravityPower`.
   Large, slow swing.
 - **Hair:** mid `stiffness` (keeps silhouette), mid `dragForce`, mid `gravityPower`. Bangs stiffer
-  than a ponytail.
+  than a ponytail. **Measured VRoid convention** (donor 9128 authored `Hair` chains, cross-checked vs
+  `hair.glb`): `stiffness ≈ 0.75`, `dragForce = 0.4`, **`gravityPower = 0`** (stiffness-held, no droop),
+  `hitRadius = 0.02`, `gravityDir = [0,−1,0]`, and `center = null` (world space → hair swings on head
+  turns; a `center = head` would kill head-turn swing). Preserve these when carrying a donor's own hair
+  springs; they beat re-synthesized values.
 - **Cloak / cape:** low `stiffness`, higher `dragForce` (heavy fabric damps fast), higher
   `gravityPower` (weight). Big lazy motion.
 
