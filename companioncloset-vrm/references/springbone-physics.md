@@ -235,3 +235,14 @@ on girl-base, multiply `stiffness`/`hitRadius` and collider `radius`/`tail` by (
 — OR author/synthesize the springs directly in girl-base's metric scale (approach B, `synthesize_hair`,
 already in base meters → no correction needed). This is a decision input for the imported-hair-physics
 work: synthesizing in base scale sidesteps the scale-correction entirely.
+
+**SkinTokens** (VAST-AI-Research, MIT, arXiv 2602.04805) — the auto-rigging engine behind our
+**garment-rig aspiration (roadmap T3.3)**. GLB mesh in → **skeleton hierarchy + per-vertex skin
+weights** out (FSQ-CVAE weight tokenizer + TokenRig autoregressive, Qwen3-0.6B backbone; RL-refined).
+Now RELEASED (MIT, pretrained weights on HF: `articulation_xl_quantization_256_token_4` +
+`skin_vae_2_10_32768`). **Predicts weights + skeleton ONLY — NO physics / spring bones / dynamic
+motion / hair-strand rigging**, so spring params still come from the cloth/hair profile tables above.
+**Stack constraint:** CUDA-only (NVIDIA ≥14 GB VRAM, CUDA 12.1, PyTorch 2.7, flash-attn) — off our
+Apple-Silicon/MLX line. Using it = a CUDA box or an MLX port (mirrors the TRELLIS situation); the
+on-device path for fitted garments stays **proximity weight-transfer** (roadmap P2). Relevant to the
+GARMENT-rig lane, NOT to hair physics (head-anchor / preserved-source-springs need no weight predictor).
