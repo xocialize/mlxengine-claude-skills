@@ -137,3 +137,12 @@ The Swift consumer side under `xocialize/<package>-mlx` should reference the mlx
 ## Browser-side fallback
 
 For one-off conversions where you don't want to set up the local environment: https://huggingface.co/spaces/mlx-community/mlx-my-repo. It runs `mlx_lm.convert` server-side and uploads to mlx-community for you. Useful for LLMs only; doesn't cover VLM / audio / diffusion.
+
+
+## `hf` CLI: repeat `--include`/`--exclude` per pattern (bit twice in one session)
+
+`hf download|upload REPO [FILENAMES...]` treats everything after the first `--include`/`--exclude`
+value as POSITIONAL filenames. `--exclude "a/*" "b/*"` downloads `b/*` instead of excluding it;
+`--include "model.safetensors" "config.json" ...` silently skipped the 5 GB weights file and
+"validated" a 15 MB download. Repeat the flag per pattern, and verify the byte count of what
+landed before calling a download a validation.

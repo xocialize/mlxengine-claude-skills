@@ -81,8 +81,9 @@ against the live `MLXToolKit` source, since the contract version grows (see C-ve
 - **`WeightSourcing` / `WeightSource`** (engine ≥ 0.19.0) — the `Configuration` declares every
   fresh-machine network source (`WeightSource{role, repo, revision, matching}`) and computes the
   still-missing subset via `missingWeightSources(storeRoot:)`. Complements `ModelStorable` (WHERE
-  weights go) with WHAT would be fetched; drives the MAT gate and `load()` auto-materialization —
-  full requirements in section 4.
+  weights go) with WHAT would be fetched; drives the MAT gate and the ENGINE's pre-load
+  materialization (contract 1.24: the engine executes, `load()` just loads) — full requirements
+  in section 4.
 
 ## 3. Per-port conformance checklist (C0–C13)
 
@@ -123,11 +124,13 @@ marked "(craft)" are workflow discipline that isn't a numbered C item.
 - **Asset resolution (craft, unnumbered).** Weights/tokenizer/config resolve from the
   `Configuration` (and the engine-stamped `modelsRootDirectory` for `ModelStorable` configs) —
   no hardcoded per-machine paths in the package.
-- **Weight sourcing + auto-materialization (MAT gate, engine ≥ 0.19.0).** The `Configuration`
-  conforms to `WeightSourcing` (quant-aware globs), `load()` auto-materializes missing sources
-  for dir-less configs with progress forwarded via `WeightDownloadProgress`, `prewarmPaths`
-  resolves the store layout, and the package's own conformance suite runs
-  `MaterializationConformance.check` (MAT-1..5, offline). Full requirements in section 4.
+- **Weight sourcing + auto-materialization (MAT gate, engine ≥ 0.19.0; engine-executed since
+  contract 1.24).** The `Configuration` conforms to `WeightSourcing` (quant-aware globs); the
+  ENGINE downloads the missing sources pre-`load()` (opt out via `SelfMaterializing` only for
+  non-HF hosts / wrappers that fetch internally — those forward progress via
+  `WeightDownloadProgress` themselves), `prewarmPaths` resolves the store layout, and the
+  package's own conformance suite runs `MaterializationConformance.check` (MAT-1..5, offline).
+  Full requirements in section 4.
 - **Device eligibility (C10).** `DeviceProfile.eligibility(for:)` — required backends present, chip ≥
   floor, OS ≥ min — gates admission at `register`. A variant that can't run on a tier must not claim
   it.
@@ -148,12 +151,18 @@ marked "(craft)" are workflow discipline that isn't a numbered C item.
 
 ## 4. Weight sourcing & auto-materialization (engine ≥ 0.19.0 — the MAT gate)
 
-First-run weight downloads are a **package responsibility with an engine-level contract**
-(mlx-engine-swift v0.19.0, `ee65087`): the app only picks a models folder; the package declares
-WHAT it would fetch on a fresh machine and materializes it itself. Every new package conforms
-**born-clean** — same adoption pattern as the 1.14 efficiency contract: build it into Stage 2
-steps 3–4, never as a later retrofit. Explicit-directory configs remain the dev-mode escape hatch
-and **never touch the network** (DEV_ARCHIVE flows stay untouched).
+First-run weight downloads are a **declaration responsibility with an engine-executed contract**:
+the app only picks a models folder; the package declares WHAT it would fetch on a fresh machine
+(v0.19.0, `ee65087`), and **since contract 1.24 the ENGINE executes the download itself** —
+`resident()` materializes the missing sources into the store BEFORE `load()`
+(`MLXServeCore.WeightMaterializer`: chunk-delegate streaming, 8-way ranged chunks for xet-backed
+files ≥ 64 MB, progress through `WeightDownloadProgress`), so `load()` just loads. A package
+ships its own executor ONLY by conforming to `SelfMaterializing` (non-HF hosts, wrappers whose
+runtime fetches internally); a legacy package that still self-materializes in `load()` stays
+correct — its own missing-check runs after the engine's pass and finds nothing left. Every new
+package conforms **born-clean** — same adoption pattern as the 1.14 efficiency contract: build it
+into Stage 2 steps 3–4, never as a later retrofit. Explicit-directory configs remain the dev-mode
+escape hatch and **never touch the network** (DEV_ARCHIVE flows stay untouched).
 
 Four requirements:
 
@@ -167,38 +176,159 @@ Four requirements:
    instead. `missingWeightSources(storeRoot:)` computes the still-missing subset: honor the
    configuration's **explicit local paths first**, then probe the ModelStore layout
    (`<root>/<org>/<name>/…`); nil store + no explicit paths ⇒ everything missing.
-2. **Execute — `load()` auto-materializes.** When explicit dirs are nil and the engine stamped a
-   store root, `load()` downloads the missing sources into the store layout with a **native**
-   downloader (swift-huggingface `HubClient.downloadSnapshot(of:to:revision:matching:)`; env-detected
-   `HF_TOKEN` covers gated repos), forwarding per-file progress via
-   `WeightDownloadProgress.report(fraction:bytesPerSecond:)` so the engine's `PreparationMonitor`
-   surfaces `.downloading`. **A download the monitor can't see is a conformance smell** — users get
-   a dead spinner, and the live `MaterializationRun` bench flags it as `downloadPhase=NO`.
-   Download sources sequentially, mapping source *i* of *n* onto fraction `[i/n, (i+1)/n)` so one
-   progress bar stays monotonic. Then load from the store-resolved view of the configuration
-   (MLXLTX2's `resolved(storeRoot:)` maps nil dirs onto the store; explicit dirs always win).
+   **BUNDLED-WEIGHTS packages declare the other vocabulary (engine ≥ 0.24.0, contract 1.17):**
+   a package whose checkpoints are vendored in the SPM resource bundle (Real-ESRGAN's ~2 MB
+   SRVGGNetCompact checkpoints) conforms to `BundledWeightSourcing` *instead of*
+   `WeightSourcing` — `bundledWeightSources` lists `BundledWeightSource(role:url:)` with the
+   resolved bundle URL (declare the `Bundle.module` lookup result directly; `nil` = lookup
+   failed, the gate fails that role). Do NOT declare a network `WeightSource` for bundled
+   weights — it would either report a dishonest missing set or force a pointless download.
+   Hybrid (bundled + network) packages conform to both; the role namespace is shared. A
+   bundled-only config whose sources all resolve makes `engine.needsDownload` read `false` —
+   the sanctioned signal (the pre-1.17 always-present-`prewarmPaths` workaround is retired;
+   `WeightPrewarming` keeps its real job, cold-start page-in).
+2. **Execute — the ENGINE materializes; `load()` just loads (contract 1.24).** When explicit
+   dirs are nil and a store root is set, `resident()` downloads the missing sources into the
+   FLAT store layout (`models--<org>--<name>/<path>`, the fleet convention — the MS-2 default
+   probe accepts it alongside the hub-client snapshot layout) before the package is even
+   constructed, with byte-accurate progress surfaced through `PreparationMonitor`. `load()`'s
+   only job is loading from the store-resolved view of the configuration (MLXLTX2's
+   `resolved(storeRoot:)` maps nil dirs onto the store; explicit dirs always win). **Opt-out:**
+   conform the `Configuration` to `SelfMaterializing` when the generic executor can't do the
+   job (non-HF hosts, Path-A wrappers whose runtime downloads internally) — then `load()`
+   executes its own download and MUST forward progress via
+   `WeightDownloadProgress.report(fraction:bytesPerSecond:)`; a download the monitor can't see
+   is a conformance smell (dead spinner; the live `MaterializationRun` bench flags it as
+   `downloadPhase=NO`), and sources should map source *i* of *n* onto fraction
+   `[i/n, (i+1)/n)` so one progress bar stays monotonic. Do NOT ship a new per-package
+   `WeightMaterializer` copy — that pattern is retired (the engine's executor absorbed the
+   mage-flow reference implementation, cf45682/6faa4cb).
 3. **Prove — MAT-1..5 in the package's own conformance suite.** Next to the C0–C13 gate tests, run
    `MLXServeConformance.MaterializationConformance.check(freshConfiguration:satisfiedConfiguration:)`
    — offline, no network, no weights: **MAT-1** ModelStorable · **MAT-2** non-empty source
-   declaration · **MAT-3** role/repo hygiene (unique roles, `org/name` repos) · **MAT-4** honest
-   fresh-machine missing set (nil store ⇒ ALL sources missing) · **MAT-5** explicit paths satisfy
-   (tiny probe files in a temp dir make the satisfied config). Assert `report.passed` with
-   `report.summary` as the failure message, and run it **per selectable quant tier** — the
-   declaration changes with the quant.
+   declaration (network `WeightSourcing` and/or bundled `BundledWeightSourcing`) · **MAT-3**
+   role/repo hygiene (roles unique across BOTH vocabularies, `org/name` repos) · **MAT-4**
+   fresh-machine posture, each subset by its own rule (network sources: nil store ⇒ ALL missing;
+   bundled sources: ALL resolve to existing files — a stripped resource fails in the suite, not
+   at the user's first inference) · **MAT-5** explicit paths satisfy (tiny probe files in a temp
+   dir make the satisfied config; bundled-only packages have nothing to satisfy). Assert
+   `report.passed` with `report.summary` as the failure message, and run it **per selectable
+   quant tier** (or per bundled variant) — the declaration changes with the selection.
 4. **Prewarm — `prewarmPaths` resolves the store.** For nil-dir configs, `WeightPrewarming`'s
    `prewarmPaths` must resolve against the store layout so the engine's `WeightPrewarmer` pays off
    from the SECOND cold launch on downloaded weights (first launch is a no-op — nothing on disk
    yet; missing paths skip).
 
-**Reference implementation:** MLXLTX2 (`~/Development/mlxengine-video-ltx/LTX_DEV/ltx-2-mlx-swift`,
-`7ae7aed`) — the `LTX2Configuration` `WeightSourcing` extension (+ `resolved(storeRoot:)`),
-`Sources/MLXLTX2/WeightMaterializer.swift`, and `Tests/MLXLTX2Tests/MaterializationTests.swift`.
+**Reference implementations:** network — MLXLTX2 (`~/Development/mlxengine-video-ltx/LTX_DEV/ltx-2-mlx-swift`,
+`7ae7aed`) — the `LTX2Configuration` `WeightSourcing` extension (+ `resolved(storeRoot:)`) and
+`Tests/MLXLTX2Tests/MaterializationTests.swift` (its `Sources/MLXLTX2/WeightMaterializer.swift`
+is the retired per-package executor pattern — since contract 1.24 the engine's
+`MLXServeCore/WeightMaterializer.swift` is the executor; don't copy the package-side one).
+Bundled — mlx-realesrgan-swift v0.4.1 (`~/Development/mlxengine-image/PROD/mlx-realesrgan-swift`) —
+the `RealESRGANConfiguration` `BundledWeightSourcing` extension over
+`SRVGGNetCompact_Playback.Variant.bundledWeightsURL` and its full-gate-per-variant
+`MaterializationTests`.
 The consumer/app side — folder pick, `needsDownload` routing, progress UI, and the live
 `MaterializationBench` measurement whose `[MAT]` logLine is the registry's Val evidence for
 first-run behavior — is documented in the `mlxengine-implementation` skill's
 `references/materialization.md`.
 
-## 5. Worked example — a `ModelPackage` conformer
+## 5. Cancellation honoring (engine ≥ 0.27.0 — the CAN gate)
+
+Cancellation honoring is a **package obligation with an executable gate** — the adjunct to C13's
+cancellation convention the same way the MAT gate (§4) is to `WeightSourcing`. Every new package
+conforms **born cancel-clean** in Stage 2 step 4, never as a later retrofit (the Qwen3-TTS Talker
+loop shipped with no checkpoints and nothing caught it — this gate is why that can't recur).
+
+The engine's final run-lifecycle semantics (V1–V3, engine 0.26.0) the package codes against:
+**both** cancellation lanes arrive as the same `CancellationError` — a user cancel (the app
+cancelling the `Task` wrapping `engine.run()`) which the engine surfaces to the caller unchanged
+(classified `.cancelled`, not failed), and a governor preemption which the engine recognizes as
+its own doing and **requeues**. The package cannot and must not tell them apart: checkpoint,
+unwind cleanly, rethrow unchanged.
+
+Three requirements:
+
+1. **Checkpoint — `try Task.checkCancellation()` first, then at every natural yield point.**
+   The FIRST act of `run()` is a cancellation check — before `notLoaded` validation, before
+   dispatch (this entry checkpoint is what the offline gate exercises). Then per denoise step,
+   per VAE-decode chunk, per generated token/frame, per encoder layer — the LTX-proven
+   placements. Rethrow the `CancellationError` **unchanged**: wrapping it in a package error
+   ("laundering") breaks both the engine's lane disambiguation and the caller's `.cancelled`
+   classification. Report `RunProgress` (contract 1.18) at the same seams — per-step progress
+   is accepted as observable evidence of the cadence in CAN-3, and it feeds the governor's
+   preserve-nearly-done policy.
+2. **Prove — CAN-1..3 in the package's own conformance suite.** Next to the C0–C13 + MAT tests:
+   `await CancellationConformance.checkRun(package:request:)` with a stub/smallest configuration
+   (construction is cheap per C13; the pre-cancelled form throws at the entry checkpoint before
+   weights are touched, so it is offline-safe for every package) — **CAN-1** pre-cancelled
+   `run()` surfaces `CancellationError` · **CAN-2** the outcome is cancelled-not-failed in the
+   capability's canonical shape (error unwrapped; a partial response, if returned, carries
+   `FinishReason.cancelled` — prove via `classifiesCancelled:`). Then
+   `CancellationConformance.checkCadence(manifest:posture:)` — **CAN-3** a long-run-implied
+   manifest (video/audio generation capability, or ≥ 2 GB declared `peakActivationBytes`)
+   declares its checkpoint cadence (`.cadence([...(phase:unit:reportsRunProgress:)])`); genuinely
+   sub-second packages declare `.subSecondRuns(reason:)` instead. The declaration in the suite IS
+   the document of record for the cadence.
+3. **Measure — the live `[CAN]` bench in the consuming app.** `MLXEngineTestKit.CancellationBench`
+   cancels at T seconds into a real run through the sanctioned user seam, measures time-to-throw
+   (one MLX eval is the substrate floor; LTX: 1.08 s steady-state, 16–21 s in a compile-heavy
+   first step), captures the V2 phase that absorbed the latency, and proves the clean
+   cancel→re-run recovery. Xcode-app harness only (metallib boundary). This replaces bespoke
+   per-app harnesses (LTX's `LTX_CANCEL_TEST`/`LTX_CANCEL_AFTER`/`LTX_CANCEL_RERUN` levers) —
+   don't build new ones.
+
+## 5b. Inference mode (engine ≥ 0.36.0 / contract 1.27.0 — the C14 INF gate)
+
+**`MLXNN.Module.training` defaults to `true`.** In that state `BatchNorm.callAsFunction`
+normalizes by the CURRENT batch's statistics *and overwrites* the checkpoint's
+`running_mean`/`running_var` on every forward (`MLXNN/Normalization.swift`: the
+`if self.training, let runningMean, let runningVar` branch). A port that never calls
+`model.train(false)` therefore runs inference on per-image statistics, never reads the trained
+statistics at all, and **drifts across successive calls on one instance**.
+
+This one already lived in `swift-port-parity.md` as a bullet — and a PROD package shipped it
+anyway, for months, through in-app validation. That is the lesson: **as prose it did not hold; it
+needed a gate.** Hence C14.
+
+**Why it survives everything else you run.** It passes the key contract (the frozen running-stat
+keys load fine — freezing affects `trainableParameters()`, not `update`). It passes offline
+conformance, which never runs a kernel. It passes an eyeball: a matte still looks like a matte, a
+denoise still looks like an image. In `mlx-birefnet-swift` the PROD tier over-segmented by **68%**
+(foreground fraction 0.42 vs a PyTorch oracle's 0.25) with e2e logits cosine **0.264**, and every
+human who looked at it said "fine."
+
+**The diagnostic signature** — worth memorizing, because it localizes in one read:
+
+> the LayerNorm/RMSNorm parts of the graph are bit-clean while everything downstream of the first
+> BatchNorm diverges.
+
+A transformer encoder at cosine 1.0000000 feeding a conv decoder at cosine 0.62 is this bug, not a
+layer-translation bug. Corollaries that also point here: the divergence is **dtype-independent**
+(fp16 ≈ fp32), and patching a weird value *inside* `running_var` changes **nothing** — which is
+itself proof the running stats are never read.
+
+Three requirements:
+
+1. **Set eval mode at the single construction choke point**, not per call site. Find the one place
+   every load path funnels through (the pipeline/wrapper initializer) and call `model.train(false)`
+   there, so `fromPretrained`, convenience helpers, direct init, the package wrapper and the CLI
+   gates all inherit it. Per-forward calls are the anti-pattern: the next entry point added won't
+   have one.
+2. **Expose the loaded graph to the gate.** A `var inferenceModeGraphs: [String: MLXNN.Module?]`
+   seam keyed by tier/role (reached via `@testable`, with the `InferenceModeInspectable`
+   conformance living in the *test* target so the shipping target takes no dependency on the
+   conformance library). Key it by role, not by hardcoded tier names, or a package that later
+   grows a checkpoint family silently stops covering the new one.
+3. **Assert the gate can fail.** The test that matters is not "the loaded model reports
+   `training == false`" — it is that a **freshly constructed** model FAILS INF-1 and passes only
+   after going through the choke point. Without that, deleting the fix leaves the suite green.
+
+Only nets carrying running statistics are affected (`BatchNorm`, `InstanceNorm` with
+`track_running_stats`). Dropout is identity-safe. Pure LayerNorm/RMSNorm transformer stacks are
+immune — which is exactly why LLM/VLM ports never surfaced this and conv/audio ports did.
+
+## 6. Worked example — a `ModelPackage` conformer
 
 Built on the real Gen-B signatures. The model graph stays in `<Name>Core` (Path B) or is the reused
 `MLXLLM`/`MLXVLM` loader (Path A); the conformer below is the thin declaration layer — aim for this
@@ -270,7 +400,7 @@ public final class QwenImageEditPackage: ModelPackage {
 What *didn't* move into the conformer: the RoFormer/Demucs graph stays in `*Core`. The conformer is
 ~40 lines of declaration + dispatch. That ratio is the target for every port.
 
-## 6. Discovery & "dynamic" loading on Apple platforms (set expectations)
+## 7. Discovery & "dynamic" loading on Apple platforms (set expectations)
 
 There is **no `dlopen` of arbitrary signed SPMs** under sandbox/notarization. "Loaded as needed" is
 realized as three independent axes, not runtime plugin loading:
@@ -286,13 +416,17 @@ realized as three independent axes, not runtime plugin loading:
 True out-of-process / third-party tools are a future transport concern handled by the engine's
 bridge with the same manifests — never by changing `Core` or the conformer.
 
-## 7. Definition of done (per port)
+## 8. Definition of done (per port)
 
 A port is harness-ready when: it's a `-swift` SPM with a transport-free default product; exactly one
 `ModelPackage` declares the manifest and registration; lifecycle is host-owned with no internal
 caching; every variant declares `license` + `minUnifiedMemory` + assets; the license gate is
 two-layer; `run(_:)` dispatches on capability and never throws non-`PackageError` across the
-boundary; the `Configuration` declares `WeightSourcing` and the package's suite passes the offline
-**MAT-1..5 gate** (section 4); and **elementwise parity + a committed memory report** pass on at
+boundary — with ONE sanctioned exception: `CancellationError` rethrown **unchanged** from its
+cooperative checkpoints; the `Configuration` declares `WeightSourcing` and the package's suite
+passes the offline **MAT-1..5 gate** (section 4), the offline **CAN-1..3 gate** (section 5), and —
+for any net carrying BatchNorm/running statistics — the **C14 INF gate** (section 5b), with a test
+that proves a freshly constructed model FAILS it and passes only via the construction choke point;
+and **elementwise parity + a committed memory report** pass on at
 least one admissible tier. At that point Stage 2 integration is a single
 `register(registration, configuration)` call into `MLXServeEngine`.

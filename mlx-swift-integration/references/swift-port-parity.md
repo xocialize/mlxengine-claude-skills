@@ -46,6 +46,27 @@ Fixture generation is a `tools/dump_*.py` script run with the ORACLE'S venv, dum
 (bf16 saved as fp32; ids as int32) into the test resources. Promote the minimal `.npy` reader
 into the main target so CLI gates share it.
 
+## The gate matrix must span the input envelope — largest production grid + decoded output per tier
+
+The S1/S2/S2b fixtures are generated once at whatever size keeps them small — and that silently
+defines the port's validated envelope. Position-dependent machinery (RoPE scaling, pos-embed
+interpolation, vision-grid indexing) runs a DIFFERENT code path at larger grids, so small-grid
+cosines validate nothing above them. The qwen3vl-mlx-swift conditioner was cos 0.998 at its
+576-token golden grid (768² input) and **0.84 at the ~1024-token grid** (1024² input) — filed as
+"minor residual," it produced glitch-banded Boogu edits that only surfaced months later in
+in-app validation. Full doctrine (incl. the Anima 512² case) → `mlx-porting`
+`references/parity-testing.md` ("largest production grid"). Swift-side rules:
+
+- **Fixture matrix includes the max grid the product will run** (max resolution / max
+  vision-token count / max sequence), not just the golden-friendly small one.
+- **S2b's eyeball gate runs per shipping resolution tier** — one decoded image at each tier the
+  wrapper's configs expose, not one image total.
+- **A cosine that sags monotonically with grid size is a structural bug** — blocker until
+  root-caused, never "not catastrophic" (conditioning error is amplified by the denoise loop).
+- **Record the validated input envelope** (e.g. "edit inputs ≤ ~600 vision tokens / ≤0.6 MP") in
+  the workspace APP-VALIDATION.md so app-side testers know where the tested region ends — the
+  in-app failure was simply the first time anyone ran a 1 MP input.
+
 ## S0 — the key contract (before any model code)
 
 - Read the actual safetensors **headers** (8-byte length + JSON; pure Foundation — no MLX) and
@@ -81,6 +102,14 @@ The structural gate that makes all this cheap: **instantiate the module weight-f
 in milliseconds offline. Keep non-parameter buffers (rope tables, inv_freq) in a plain holder
 class so Module reflection can't see them — or they pollute the key set.
 
+## The NAX split-K GEMM bug (mlx-swift ≤ 0.31.6, M5-class GPUs) — check FIRST for "bf16 breaks above a size"
+
+Before debugging any Swift-side "bf16/fp16 garbage or NaN that switches on above a token/resolution threshold (edit paths first)": mlx-swift builds with `MLX_METAL_JIT=ON`, and its JIT path mis-instantiates `steel_gemm_splitk_axpby_nax` with the output dtype (mlx#3797, fixed upstream by #3810, in no release ≤ 0.31.6). Dispatch window: half precision, M·N ≥ 2048², K ≥ 10240, K ≥ 3·max(M,N) — in practice only the FFN **down-projection** (K = 4×hidden). Python MLX is AOT-compiled and unaffected, so "works in the Python rung, breaks in Swift" fits this bug.
+
+- Fix: **row-chunk that one GEMM at ≤896 rows** (output rows independent → exact; bf16 stays ~2× faster than fp32). Do NOT flip the whole model to fp32. Reference impls: `qwen3vl-mlx-swift` `MLP.downProjected`, `mage-flow-swift` `MageFeedForward.downProjected`, `boogu-image-swift` `LuminaFeedForward.downProjected`.
+- Probe after every mlx-swift bump (`--nax-probe` gate modes; strict thresholds — near the boundary corruption is cos ≈ 0.998, NOT NaN); on PASS delete the chunks. `boogu-image-swift/tools/check_mlx_swift_3810.sh` checks a tag's vendored mlx.
+- Full registry entry + history (this one bug stranded LTX → Boogu → Mage as separate mysteries): mlx-porting skill, `common-pitfalls.md` #35.
+
 ## The Metal-watchdog family (≈10 s command-buffer ceiling)
 
 One root cause, four disguises met in a single port. The rule: **a Metal command buffer must
@@ -96,17 +125,23 @@ pressure). `kIOGPUCommandBufferCallbackErrorTimeout` is the watchdog firing.
    an `eval(model)` after `update`, the multi-GB cast folds into the first forward's command
    buffer and times out the watchdog. `eval` the model right after load. (Helios S2b: an
    11 GB umT5 bf16→fp32 upcast un-`eval`'d → timeout on the very first encode.)
-2. **Quantized forwards run wholly on the GPU stream.** Quantized matmuls route to Metal even
-   under a CPU pin, so a CPU-pinned quantized graph becomes one Metal buffer fenced on CPU ops
-   at every block. (For a quant-quality cosine gate this is fine doctrinally: GPU float noise
-   ~1e-3 is negligible against int4 error at a ≥0.99 gate.) **Load on CPU stream, but run the
-   forward OUTSIDE the CPU pin** — wrap only `applyQuantization`+`loadArrays`+`update`+`eval` in
-   `withDefaultDevice(.cpu)`, return the model, then call it on the default (GPU) stream.
-   **Symptom if you don't:** at small gate seqLen the per-block CPU fence does NOT trip the
-   watchdog — it just **grinds** (process state `R`, 100+ min CPU time, zero output), which
-   masquerades as a hang or a reaped task. Triage with `ps -Ao pid,stat,etime,time` — `R` +
-   huge CPU time = alive-but-CPU-pinned (not `Z`/reaped, not `S`-QoS-starved). Helios S6 lived
-   this exactly: CPU-pin → 100 min no output; GPU → seconds, int4-vs-bf16 cosine 0.9965.
+2. **Quantized forwards run wholly on the GPU stream. ⚠ HIGHEST-COST MEMBER — recurs.** This one
+   has now bitten twice (Helios 100 min, Z-Image **10 hours**) precisely because it does NOT error
+   and does NOT trip the watchdog — the default "pin the whole gate to `.cpu` like the fp32 gates"
+   instinct is the trap. Quantized matmuls route to Metal even under a CPU pin, so a CPU-pinned
+   quantized graph becomes one Metal buffer fenced on CPU ops at every block. (For a quant-quality
+   cosine gate the GPU is fine doctrinally: GPU float noise ~1e-3 is negligible against int4 error at
+   a ≥0.99 gate.) **Load on CPU stream, but run the forward OUTSIDE the CPU pin** — wrap only
+   `applyQuantization`+`loadArrays`+`update`+`eval` in `withDefaultDevice(.cpu)`, return the model,
+   then call it on the default (GPU) stream. And since the SPM **test target's** metallib is
+   unreliable for GPU, put the quant gate in the **CLI lane** (`swift run … --quant-gate`), not an
+   XCTest (Z-Image's P7 gate is a CLI subcommand for exactly this reason). **Symptom if you don't:**
+   at small gate seqLen the per-block CPU fence does NOT trip the watchdog — it just **grinds**
+   (process state `R`, 100+ min CPU time, zero output), which masquerades as a hang or a reaped task.
+   Triage with `ps -Ao pid,stat,etime,time` — `R` + huge CPU time = alive-but-CPU-pinned (not
+   `Z`/reaped, not `S`-QoS-starved). Helios S6: CPU-pin → 100 min no output; GPU → seconds,
+   int4-vs-bf16 cosine 0.9965. Z-Image P7: CPU-pin → 10 h `R` at 99% before kill; moved to the GPU
+   CLI lane → int8 cos 0.9998 / int4 0.976 in seconds.
 3. **Never eagerly eval giant constant fills.** Zero-filling params before `MLXNN.quantize`
    (shapes are all that matter — every value is replaced at load) is correct; *evaluating* those
    zeros materialized ~57 GB fp32 per expert and produced a 161 GB swap-storm whose paging
@@ -254,3 +289,109 @@ Dump goldens from the Python-MLX oracle pinned to `mx.cpu` (inputs+weights+outpu
 `max_abs < 2e-4`. The keyed-`Module` + `verify:.all` real-key load (above) is still required for the
 SHIPPING package — the dict-functional probe just de-risks the translation first, with a runnable
 `swift-probe` executable (CPU stream, no metallib) accumulating one `runCore<N>()` per block.
+
+### Conditioner-stack lessons (mlx-indextts2-swift P3b, 2026-07-08)
+
+Four conditioner models (w2v-BERT Conformer, MaskGCT RepCodec, CampPlus DTDNN,
+conformer+perceiver) all gated **first-run green** — the verified-MLX-Python-donor +
+per-stage-ladder doctrine working as designed. New traps it surfaced:
+
+- **Numeric torch child keys break at `update`, not at the key contract.**
+  `ModuleParameters.unflattened` treats every numeric path segment as an ARRAY index. A torch
+  `Sequential(conv, bn)` child (`shortcut.0.*`/`shortcut.1.*`) or ModuleList-of-pairs
+  (`layers.N.0.*` attn / `layers.N.1.*` ff) modeled as a Swift module with
+  `@ModuleInfo(key: "0")` passes the 0-missing/0-unused key check, then `update(parameters:)`
+  throws `incompatibleItems` (it built a *list* where your module tree has a *module*). Fix:
+  **sanitize-remap numeric children to named keys** (`shortcut.{0,1}` → `{conv,bn}`,
+  `layers.N.{0,1}` → `layers.N.{attn,ff}`). `MLXNN.Sequential` (the scail-2 idiom above) is only
+  for containers whose forward IS a plain chain; heterogeneous pairs with interleaved residuals
+  need the named-key remap.
+- **MLX-Swift `BatchNorm` defaults to `training = true`** — a freshly built model silently
+  normalizes with *batch* stats instead of the loaded `running_mean`/`running_var`, **and
+  overwrites those running stats on every forward**, so repeated calls on one instance also drift.
+  Any port carrying BN (speaker embedders, resnets, vocoders, conv decoders) must call
+  `model.train(false)`. The frozen running-stat keys DO appear in `parameters()`, so the key contract
+  can be green while the numerics are wrong. (BN running stats also load fine through
+  `update(verify: .all)` — freezing affects `trainableParameters()`, not `update`.)
+  - **This bullet existed and a PROD package shipped the bug anyway** (`mlx-birefnet-swift`, found
+    2026-07-25 — the fast tier over-segmented by 68%, e2e logits cosine 0.264 vs oracle, and it
+    passed in-app eyeball validation for months). Prose didn't hold; it needed a gate. Set eval mode
+    at the **single construction choke point** every load path funnels through — not per forward,
+    not per call site — and lock it with the engine's **C14 INF gate** (`porting-conformance.md`
+    §5b), whose load-bearing assertion is that a *freshly constructed* model FAILS INF-1 and passes
+    only after the choke point. Without that inversion, deleting the fix leaves the suite green.
+  - **Diagnostic signature:** the LayerNorm/RMSNorm parts of the graph are bit-clean while
+    everything downstream of the first BatchNorm diverges. A transformer encoder at cosine
+    1.0000000 feeding a conv decoder at cosine 0.62 is this bug, not layer translation. It is also
+    **dtype-independent** (fp16 ≈ fp32), and patching a suspicious value *inside* `running_var`
+    changes nothing — which is itself proof the running stats are never read.
+- **Fortran-order `.npy` fixtures keep recurring.** `np.save` preserves the layout of transposed
+  /permuted tensors, and a strict Swift NPY reader (rightly) rejects F-order. Dump with
+  `np.ascontiguousarray(...)` ALWAYS, and when a gate hits an F-order golden, sweep the whole
+  goldens tree once (`a.flags['C_CONTIGUOUS']`) instead of fixing one file — this port found 6
+  more in the same batch.
+- **torch `avg_pool1d(ceil_mode=True, padding=0)` divides the partial tail window by its TRUE
+  element count**, not the kernel size (verified empirically: `[9,10]` → 9.5, not 4.75). Segment
+  poolings translated by hand (CAM-layer seg_pooling) must replicate the true-length divisor.
+- **Precomputed non-weight tables (sinusoidal PE) must hide from Module reflection.** Plain
+  `MLXArray` properties are auto-registered as parameters (breaking the 0-missing contract for
+  keys not on disk). Park them in a tiny non-Module holder class (`final class PETable { let pe:
+  MLXArray }`) — reflection skips it.
+
+### 3D sampler + mesh/texture-stage parity (trellis2-mlx-swift SW3–SW5, 2026-07-14)
+
+Later stages of the same sparse-3D port (flow-Euler CFG samplers, subdivision VAE decoders,
+dual-grid→mesh, UV bake → glTF). All ops landed exact/float-eps, but four traps produce a
+*wrong result that looks like a port bug* (or a gate that fails on a correct port):
+
+- **Topology-adaptive decoders can't be gated by a direct coords compare.** An octree/subdivision
+  decoder (predicts per-voxel "subdivide?" logits) or an occupancy→argwhere step makes DISCRETE
+  branch decisions. A single logit at ≈0 rounds the other way (your 27-term conv sum vs torch's
+  reduction order) and that one flipped decision COMPOUNDS through the upsample levels — free-run
+  output diverged 0.16 % in coords while every continuous stage was 0.9999998. **Gate by injecting
+  the oracle's discrete decisions** (dump the subdivision masks / occupancy) and run a "guided"
+  forward → coords BIT-EXACT + feats 0.9999999; then report free-run agreement (e.g. 20519/20520
+  masks match) as informational. Free-run divergence here is fp tie-nondeterminism, NOT a defect —
+  same class as an argmax tie. (Applies to any adaptive-topology net: MoE routing, NMS, pruning.)
+- **High-guidance CFG amplifies per-forward fp noise via near-cancellation — a "failing" sampler
+  gate on a correct port.** `v = s·vPos + (1−s)·vNeg` with s=7.5 is `7.5·vPos − 6.5·vNeg`; when
+  vPos≈vNeg (they nearly always are) it magnifies each forward's ~1e-6 rounding, compounding over
+  the step loop. A 12-step sparse sampler read cos **0.987** while every single forward (cond AND
+  neg, at t=500/900/1000) was **0.9999972+** and the SAME blend math passed for the dense stage.
+  Don't chase it as a bug: gate the **deterministic path** (guidance_strength=1 → cos 0.99999243
+  over 12 steps) + per-forward parity, and report the production-guidance run as informational.
+  Confirm by sweeping s: g=1 → ~1.0 isolates CFG as the amplifier. (Immaterial downstream — the
+  latent feeds a robust decoder, and production runs GPU not CPU-fp32.)
+- **Sampler/scheduler time schedules must be built in `Double`, and never wrap a Double literal in
+  `MLXArray`.** Two edges: (1) `np.linspace(1,0,n)` + a rescale warp lands a step EXACTLY on a
+  guidance-interval boundary (t=0.6 at rescale_t=3, 12 steps); float32 flips it to the wrong side →
+  that step gets CFG-on instead of off (7.5× vs 1× swing) → whole-trajectory divergence. Compute
+  the schedule + the `interval[0] ≤ t ≤ interval[1]` test in `Double` (numpy float64). (2)
+  `MLXArray([1000.0 * t])` where the literal is `Double` builds a **float64** array that
+  **HARD-CRASHES on GPU** ("float64 is not supported on the GPU", a `fatalError`, not a wrong
+  number). Always `[Float]` for anything that reaches Metal.
+- **Baking a texture onto a REMESHED/decimated surface samples the voxel volume BLACK unless you
+  closest-point-remap first.** The tex attributes live on a thin (1-voxel) sparse shell at the fine
+  resolution; DC-remesh (coarser grid) / QEM-decimate move the surface off that shell, so trilinear
+  `grid_sample_3d` at the new surface positions misses every active voxel (hitFrac **1.5 %** →
+  near-black atlas, mean 1.6/255). The CUDA path's `cuBVH closest-point remap` is load-bearing, not
+  optional polish: **BVH-remap each texel's barycentric surface position onto the ORIGINAL on-shell
+  dual-grid mesh, THEN sample** (`origMesh.bvh().closestPoints(mesh:queries:).points`) → hitFrac
+  1.0. Query = `(pos − aabb0)/voxel_size = (pos+0.5)·gridRes`; the sampling gridRes = the fine voxel
+  resolution the attrs live in, NOT the remesh resolution.
+- **Mesh-stage ordering & manifold caveat.** DC-remesh (`remeshDualContouring`) turns a fragmented
+  thin-shell dual-grid mesh (thousands of components, 120k boundary edges) into a watertight solid
+  (0 boundary edges) — but run it BEFORE UV-unwrap and decimate to budget BEFORE unwrap (xatlas on
+  millions of dirty faces grinds). `simplify` (QEM) can re-introduce non-manifold / inconsistent
+  winding after a clean remesh (trimesh `is_watertight` False post-simplify) → `unifyFaceOrientations`
+  / fix-normals after. mlx-swift-mesh surface used: `Mesh(vertices:faces:)`,
+  `.remeshDualContouring(resolution:band:)`, `.simplify(targetNumFaces:)`,
+  `.uvUnwrap()→{mesh,uvs[V,2],vertexMap,atlasW/H,charts}`, `.vertexNormals()`, `.bvh()`,
+  `bvh.closestPoints`, `.numBoundaryEdges/.numConnectedComponents`.
+- **Delegating self-contained utilities to a subagent works when the boundary is a NEW FILE + no
+  build.** A binary-glTF/GLB writer (standard format, clean signature, no MLX-parity coupling) was
+  a good background-subagent job; the guardrails that avoided a corrupt shared build: write ONE new
+  file only (no Package.swift / no shared-main edits — another session was editing those), and
+  **do not `swift build`** (concurrent builds on one `.build` corrupt it) — the parent compiles +
+  smoke-tests it on integration. Inspection-only agent code then needs a runtime smoke (write a
+  cube GLB, re-read magic + parse JSON) before wiring into the real pipeline.

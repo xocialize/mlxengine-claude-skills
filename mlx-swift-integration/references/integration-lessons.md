@@ -69,6 +69,26 @@ project-specific play-by-play lives in `~/Development/MLXEngine/EngineeringDocs/
   `ChatSession(container, instructions:, history: [Chat.Message], generateParameters:)`, then
   `respond(to:)` the latest user turn. Build `Chat.Message` with `.user(_:)` / `.assistant(_:)` /
   `.system(_:)`. System turns → `instructions`.
+- [ ] **KV-cache reuse across `run()` calls (mlx-qwen-llm-swift v0.3.0, the reference):** a fresh
+  `ChatSession` per run re-prefills the WHOLE history every turn (latency + prefill scratch grow
+  linearly with conversation length). `ChatSession` already retains `[KVCache]` across `respond()`
+  calls — hold ONE session on the package in an `@unchecked Sendable` box (serialized by the
+  `@InferenceActor`, C13) with an **exact-transcript fingerprint**: hit ⇔ incoming messages ==
+  held transcript + exactly one new user turn AND same system prompt; on hit send ONLY the new
+  turn (`TokenIterator` does NO prefix dedupe — resending history double-encodes it); on ANY
+  mismatch rebuild fresh. Traps learned live: (1) the system prompt must seed `history[0]`, NOT
+  `instructions:` — instructions re-template into the KV stream on EVERY respond(); (2) the
+  responded turn is usually `dropLast`'d out of the history you seeded — remember to record it
+  (AND the reply) in the fingerprint or you never hit; (3) drop the held session on any
+  mid-generation throw (partially appended cache must never be reused) and in `unload()`;
+  (4) `generateParameters`/`additionalContext` are mutable session vars captured per call —
+  refresh them instead of rebuilding on sampling/mode changes; (5) held-vs-fresh temp-0 outputs
+  are NOT byte-equal by upstream design (the cached generation prompt keeps the empty `<think>`
+  block a re-template omits) — gate on counters/recall/latency + exact-match only on
+  both-rebuild legs; (6) document the retained KV as intentional active-memory retention so
+  pool-telemetry triage doesn't read it as a leak, and expose hit/miss counters + a Logger line
+  so consumers can verify hit rate in situ (a consumer that rewrites replies before echoing them
+  back silently degrades every turn to a rebuild).
 - [ ] **`ChatSession` is NOT `Sendable`** (not thread-safe). Create + consume it inside a
   `nonisolated` helper that takes only `Sendable` inputs (your own `ChatMessage`, the
   `ModelContainer`, `GenerateParameters`) and maps to `Chat.Message` internally — never let the
@@ -586,3 +606,513 @@ video/DiT port — the first is a **cross-package latent bug** in the shared enc
   upload chunking) in long-lived engine/CLI processes; in-app code paths often dodge it only because
   the engine's own `WeightPrewarmer` does the paging. Corollary: a "mystery +N GB that clearCache
   can't free" is usually NOT MLX — check the ObjC autorelease pool before blaming the buffer cache.
+
+## Wrapper-level live gates + test-input hygiene (Boogu imageEdit RCA, 2026-07-03)
+
+Found root-causing "imageEdit incoherent in-app but CLI gates pass": the CLI gates drove the CORE
+directly, so the `ModelPackage` wrapper's run path had **zero live executions** — a wrapper refactor
+(v0.1.2 per-request encoder-evict) shipped "gate-green" without its edit branch ever running live.
+The actual bug turned out to be elsewhere (the qwen3vl 1024-token-grid divergence,
+`swift-port-parity.md` "gate matrix must span the input envelope"), but the coverage hole was real
+and cost the first day of diagnosis.
+
+- [ ] **Every ModelPackage surface gets a wrapper-level live gate** — a `--e2e-<surface>-pkg` mode
+  in the port's gate CLI that constructs the real `CapabilityRequest` and calls `Package.load()` +
+  `run(request)`, exactly as the app does (precedent: `BooguGate --e2e-edit-pkg`). Core-level e2e
+  gates do NOT cover the wrapper: per-stage eviction, request decode, size defaults, and response
+  encode all live only in the wrapper. Rule of thumb: if a commit touches `run(_:)`, a wrapper-level
+  gate must run live before it ships.
+- [ ] **Wrapper-vs-core A/B is the cheapest first bisect** for "in-app broken, CLI fine": run both
+  gates on identical inputs. Identical output → wrapper exonerated, suspect inputs/envelope;
+  different → the wrapper delta is the bug.
+- [ ] **Validate your test INPUTS before trusting any repro.** A `samples/` file that was itself a
+  NaN artifact (all-black PNG saved by a broken earlier run) masqueraded as an edit input and
+  produced instruction-only outputs ("model ignores the ref image") — hours chased before anyone
+  looked at the input. When a conditioned model seems to ignore its conditioning, EYEBALL THE INPUT
+  first; quarantine known-bad artifacts with a `KNOWN_BAD_` prefix instead of leaving them
+  plausible-named in samples/.
+
+## Embedding heads on stock MLXLLM models (mlx-qwen-embedding-swift, 2026-07-04)
+
+- **Check the runtime's inner-model access level BEFORE planning a fork or vendored decoder.**
+  MLXLLM's `Qwen3Model` exposes `public let model: Qwen3ModelInner`, and the inner
+  `callAsFunction` returns `norm(h)` — the `last_hidden_state` — directly. An embedding variant
+  of an already-loadable architecture (Qwen3-Embedding = plain `model_type: qwen3`) therefore
+  needs ZERO layer work: load via `#huggingFaceLoadModelContainer`, downcast `context.model`,
+  call the inner model, pool. The pre-session plan assumed the qwen3vl lastHiddenState pattern
+  or a fork would be needed; a 2-minute access-level grep collapsed that. (Corollary: guard the
+  downcast at `load()` with a diagnosable WrongModelTypeError — the MLXVLM-shadowing hazard
+  applies to any factory-resolved key.)
+- **`import MLXLMCommon` + `import Tokenizers` makes `Tokenizer` ambiguous** — MLXLMCommon
+  declares its own `Tokenizer` protocol (`encode(text:addSpecialTokens:)`). `ModelContext
+  .tokenizer` is the MLXLMCommon one; qualify `any MLXLMCommon.Tokenizer`. And you still need
+  `import Tokenizers` when using the `#huggingFace…` macros (their expansions reference it) plus
+  `import MLXHuggingFace` for the macros themselves — "no macro named …" almost always means the
+  missing import, not a version mismatch.
+- **Last-token pooling's silent-failure mode is the EOS token.** Qwen3-Embedding's tokenizer
+  post-processor appends `<|endoftext|>` (151643 — note: NOT `tokenizer.eos_token`, which prints
+  `<|im_end|>`) and the reference pools THAT position. swift-transformers honors the
+  post-processor (token ids came out exactly equal to the Python fast tokenizer), but append
+  defensively when missing — a pooled non-EOS position produces plausible-looking, quietly
+  degraded vectors. Gate tokenizer ids EXACTLY (dump ids beside vectors in the parity fixture);
+  cosine alone won't localize a tokenizer break.
+- **Sequential single-sequence forwards beat left-padded batching for embed surfaces at consumer
+  scale.** `cache: nil`, one text per forward: pooling is exact by construction, no mask/padding
+  bookkeeping to get wrong, and the batched-GEMM win is noise for a 0.6B model embedding a
+  handful of texts. Declare it in the package doc so a future "optimization" doesn't reintroduce
+  the padding bug class. Parity int8-vs-fp32 landed at cosine ≈0.9996 with this shape.
+
+## Engine ≥ 0.21.0 owns the GPU buffer-pool policy (N5, 2026-07-05) — package-author implications
+
+- **MLXServeCore now links mlx-swift** (the engine repo's first runtime dependency — allocator
+  API only, for the process-global `Memory.cacheLimit` policy + pool telemetry; R-MEM-2 in the
+  engine's architecture.md). **MLXToolKit stays dependency-free**, so the step-3 "build the
+  contract offline before pulling the MLX graph" workflow is unchanged. Don't "fix" a package's
+  Package.swift to drop its own mlx-swift dep on the theory the engine now provides it — packages
+  still declare their own.
+- **Your `unload()` contract is UNCHANGED.** Packages still call `MLX.Memory.clearCache()` in
+  `unload()` (the C-level expectation). The engine's `trimAfterEvict` knob is opt-in,
+  default-OFF belt-and-braces on top — never a substitute.
+- **Refinement of the metallib lesson above: the ALLOCATOR API also initializes Metal.** Not just
+  kernels/evals — a bare `Memory.cacheLimit` get/set or `Memory.activeMemory` read initializes the
+  Metal device and dies on the metallib in swift-testing helper processes. The engine's own N5
+  bring-up hit exactly this: engine init's cacheLimit write aborted every downstream package's
+  offline admissibility suite (they construct `MLXServeEngine` under swift-testing). The fix
+  pattern is reusable: **scope any process-global MLX touch that can run under a test framework
+  through `try? MLX.withError { … }`** — it converts the default aborting handler into a caught
+  throw, and the environments where it fails are exactly those that can't run GPU work anyway,
+  so degrading to a no-op is exact. Engines ≥ 0.21.0 do this internally — constructing an engine
+  in offline tests is safe again; `engine.appliedGPUCacheLimitBytes == nil` is the tell that the
+  write didn't take (unmanaged policy OR metallib-less process).
+- **Mem-bench / engine-e2e measurement interplay:** an engine-driven live gate (the
+  `--engine-e2e` pattern) now runs under a bounded pool by default (min(2 GB, 5% of budget)),
+  which can shave phys peaks vs historical unbounded runs — pass
+  `gpuCache: .unmanaged` at engine construction when a measurement must match pre-0.21.0
+  numbers. Package-direct benches (`pkg.load()`/`run()` with no engine, e.g. `--mem-bench`)
+  never construct an engine and are unaffected.
+
+## Weight/adapter downloads: the async `download(for:delegate:)` progress trap + honest-phase doctrine (P2, 2026-07-05)
+
+- **`URLSession.shared.download(for: request, delegate:)` (the async convenience) never delivers
+  `didWriteData` progress to the task-level delegate** — verified empirically (LTX `--lora-fetch-gate`:
+  0 progress callbacks on a 336 MB fetch). If a download must report progress, use the CLASSIC
+  pattern: a session-level delegate + explicit `downloadTask(with:)` bridged to async via a
+  one-shot continuation (+ `withTaskCancellationHandler` cancelling the URLSession task, so Swift
+  Task cancellation → `URLError.cancelled` → rethrow as typed `CancellationError`, keeping hosts'
+  "cancelled ≠ failed" reporting intact). Relocate the temp file synchronously inside
+  `didFinishDownloadingTo` (it dies on return) — into the destination directory, so the final
+  atomic move never crosses volumes.
+- **The `WeightDownloadProgress` TaskLocal sink does NOT flow onto URLSession's delegate queue.**
+  Capture `WeightDownloadProgress.sink` in the calling task and hand it to the delegate; a bare
+  `WeightDownloadProgress.report(...)` inside a delegate callback is a silent no-op.
+- **Honest-phase doctrine for hosts (the LTX R5 lesson):** any multi-GB first-use fetch that runs
+  inside a package's `run()` (adapters, per-request weights) reads as "Generating…" + a GPU-idle
+  hang to the operator, AND contaminates the run timer (R5: runSeconds 3628.7 s of which ~52 min
+  was a silent 4.9 GB HF download at anonymous ~1.4 MB/s). Hosts should pre-materialize via the
+  package's cache API (`isCached` + `ensure` with a bound sink) in an explicit
+  "Downloading…" phase BEFORE starting run timing; the wrapper's own in-run `ensure()` then finds
+  the file warm. Mirror the wrapper's cache-root derivation EXACTLY (engine-stamped store root
+  from `useModelStore` → user-caches fallback) or the pre-materialization warms the wrong path.
+- **Watchdog-family datum (one observation, desktop M5 Max, 2026-07-05):** a two-stage
+  Unconstrained q4 run at a tiny shape (384×224×9f) died with
+  `kIOGPUCommandBufferCallbackErrorTimeout` during the GEMMA lazy cold load
+  (`GemmaEncoder.load` → `loadWeights` → eval, pread threads active) DESPITE file prewarm having
+  paged all 28.5 GB — first sighting of the watchdog surviving prewarm on the app path. If it
+  recurs: move the Gemma load off the lazy first-generation path, or CPU-stream the weight loads
+  per the porting doctrine.
+
+## Sandboxed area-app harness: headless validation runners (IndexTTS2 Stage 2, 2026-07-09)
+
+- **Redirected stdout is BLOCK-buffered — a headless in-app validation runner that `print()`s
+  looks hung when launched with `> log 2>&1`.** Flush per line (`fflush(stdout)` inside the log
+  helper) and `exit(0)` when the run completes (headless-autorun semantics) so the harness can
+  tail the log live and detect completion. Symptom otherwise: app runs for minutes, log file
+  stays 0 bytes.
+- **You cannot stage weights/fixtures INTO a sandboxed app's container from the agent shell** —
+  `~/Library/Containers/<bundle-id>/Data/...` writes fail with `Operation not permitted` (TCC),
+  and the sandboxed app can't read `~/Development/...` paths either (user-selected-files only).
+  Two clean lanes: (a) small fixtures → bundle them as app resources (a
+  `PBXFileSystemSynchronizedRootGroup` auto-bundles non-source files; read via `Bundle.main`);
+  (b) weights → let the package's auto-materialization DOWNLOAD into the container store —
+  which doubles as the live first-run validation of the WeightSourcing path. Don't fight the
+  sandbox with env-var paths; they're unreadable anyway.
+- **Consuming an UNRELEASED engine contract from an area app: convert the app's
+  `XCRemoteSwiftPackageReference "mlx-engine-swift"` to an `XCLocalSwiftPackageReference`
+  in-place (same object ID → existing `XCSwiftPackageProductDependency` pointers stay valid),**
+  and point WIP packages' `Package.swift` at the same local path. Mixing a project-level remote
+  ref with a package-level local path dep for the same identity fails resolution. Restore the
+  remote pin when the engine change ships in a tag (note it as publish-time debt).
+- **A WIP package whose runtime needs checkpoint data shipped only as torch pickles
+  (feat matrices, mean/var stats, CampPlus .bin)**: dump to npy/safetensors with the oracle venv
+  and BAKE into package resources, with a provenance comment marking them as weight-license
+  data (not port-code license) + a debt note to move them into the weight repo at the
+  own-conversion re-publish. Swift never parses pickles.
+
+## WeightSourcing/MAT retrofit sweep across an accumulated fleet (audio, 8 packages, 2026-07-09)
+
+- **The retrofit is mechanical once the first package locks the pattern — budget ½ day was
+  generous; simple single-source wrappers take ~20 min each.** Per package: (1) add a
+  `modelDirectory: URL?` explicit-dir escape hatch (non-Codable) — REQUIRED even where none
+  existed, because MAT-5's satisfied-config check calls `missingWeightSources(storeRoot: nil)`
+  and can only be satisfied via explicit paths; (2) `WeightSourcing` extension with a
+  `requiredFiles` presence probe derived from what `load()` actually reads; (3) copy
+  IndexTTS2's `WeightMaterializer.swift` verbatim (+ swift-huggingface dep) and reroute
+  `load()`; (4) `resolved(storeRoot:)` + `WeightPrewarming`; (5) `MaterializationTests`
+  (satisfied temp-dir probe files can be 1-byte — the gate only checks existence).
+- **Retrofits REPLACE legacy download paths, and layouts differ — audit where old snapshots
+  landed before assuming reuse.** Three legacy layouts found in one fleet: swift-transformers
+  `HubApi(downloadBase:)` → `<root>/models/<org>/<name>` (MOSS — re-downloads once), the
+  kokoro core's `HubCache` → `<root>/mlx-audio/<org>_<name>` (re-downloads once), and
+  qwen3-tts's own `materialize()` → `<root>/<org>/<name>` (already ModelStore layout — zero
+  migration). Note the one-time re-download in the commit message; don't build fs-dependent
+  legacy probes into `resolved()` — keep it pure (store layout or explicit dir).
+- **When the CORE already owns a store-layout downloader with a progress hook (qwen3-tts's
+  `HuggingFaceDownloader`), keep it — the WeightSourcing delta is declaration + missing-set +
+  `WeightDownloadProgress.report` forwarding, not new download code.** Map source *i* of *n*
+  onto fraction `[i/n,(i+1)/n)` exactly like the reference materializer.
+- **Variant-keyed declarations: probe generically where checkpoint file names vary.** Across
+  qwen3-tts's 25-checkpoint catalog the weights are `model.safetensors` OR shards, so the
+  presence probe is "any `.safetensors` in dir" (the core's own `weightsExist` semantics) +
+  config/sidecar files — a hardcoded filename probe would false-negative half the catalog.
+  Run the MAT gate over `allPublished`, not just the default (it's offline — 25 configs cost
+  milliseconds). Conversely a per-VARIANT repo (mel-roformer) just computes `weightSources`
+  from the variant and the tests assert per-variant honesty (populate one repo in a temp
+  store → the other variant still reports missing).
+- **Fleet-wide behavior change to call out: rootless (no `modelsRootDirectory`) configs with
+  missing weights now THROW instead of silently downloading into a default cache.** That
+  silent path is exactly the conformance smell the contract kills; real apps always stamp a
+  store root. Dev/test flows use explicit dirs.
+- **`load()`-from-directory beats `fromPretrained(repoID)` for wrappers**: every core in the
+  fleet already had a public from-directory lane (`fromModelDirectory`, `WeightLoader.
+  loadWeights(into:from:)`, `Pipeline.load(from:)`) — loading from the resolved directory
+  makes the no-download path genuinely network-free (HubApi `snapshot()` re-checks remote
+  metadata even on cache hits).
+- **Before retrofitting, verify the package actually DOWNLOADS — bundled weights are a distinct
+  posture (mlx-realesrgan-swift, 2026-07-09).** Real-ESRGAN's "private-cache download" premise
+  was false: all 3 checkpoints (~2 MB each) are vendored `Bundle.module` resources, present on
+  every fresh install. Its fresh-install failure was `MLXServeEngine.needsDownload`'s heuristic
+  (no prewarm paths + no store marker ⇒ "needs download" forever). The bundled posture:
+  `ModelStorable` (MAT-1) + `WeightPrewarming` over the bundle URLs — always-present prewarm
+  paths short-circuit `needsDownload` to false. Do NOT declare `WeightSourcing` for bundled
+  weights: a network source either fails MAT-4 honestly or forces a download of bytes already in
+  the binary. MAT-2..5 are N/A until the engine grows bundled-weights gate vocabulary (gap
+  filed 2026-07-09). E2e-assert the fix through a real engine
+  (`register → needsDownload == false`), not just path existence.
+- **Materialization audits must cover EVERY network touch in `load()`, not just weights — the
+  qwen25vl tokenizer side-fetch (2026-07-09).** `Qwen25VLPipeline.load` called
+  `AutoTokenizer.from(pretrained: "Qwen/…")`, silently fetching the stock repo into HubApi's
+  PRIVATE cache — so even a fully materialized snapshot needed the network on first load, and
+  the bytes were invisible to the ModelStore. mlx-community snapshots are self-contained;
+  switch to `AutoTokenizer.from(modelFolder: directory)` and pin the special-token ids in a
+  cheap gated test (tokenizer sidecars are a few MB — no need for the multi-GB snapshot to
+  validate the local-tokenizer lane).
+
+## CAN-gate fleet retrofit lessons (2026-07-09 sweep, ~38 conformers / ~30 repos)
+
+- **The validation-first `run()` shape was copy-pattern-propagated across the ENTIRE fleet.**
+  All but one conformer (edgetam) had `guard … notLoaded` / capability guards before the
+  cancellation check — the exact CAN-1 signature failure, inherited by scaffolding from older
+  siblings. Even LTX, the package that PROVED the cancellation program, had the entry-ordering
+  drift (a live bench structurally can't catch it: it always runs loaded). Scaffold new
+  packages from a post-0.27.0 reference, never an older sibling.
+- **Four classes of real cancellation bug the offline gate flushed out:**
+  1. `try?` around a cancellation seam (Helios's `try? onChunk?()` silently discarded the
+     documented per-chunk cancel). Grep closure-threading seams for `try?`.
+  2. Silent partial-return: mlx-swift-lm's `ChatSession.respond` ends its stream on cancel and
+     returns partial text without throwing — and on a KV-reuse package the partial turn got
+     re-held into the session (stale KV). Post-call `try Task.checkCancellation()` after every
+     ChatSession consumer.
+  3. Laundering on SIDE paths, not the inference core: async system-framework calls
+     (AVAssetImageGenerator) and network fetches (LoRA download, `URLError(.cancelled)`) inside
+     diagnostic-wrapping catches. Add `catch is CancellationError { throw }` first; map
+     `URLError(.cancelled)` back to `CancellationError`.
+  4. Core "cancel support" that never reads the Task: both separation cores' per-chunk
+     `checkCancelled()` only read their own `cancel()` flag. Grep the helper for
+     `Task.checkCancellation`, not the word "cancel".
+- **A mid-loop bail can CREATE a laundering path**: an empty-output guard downstream of a
+  `break` (IndexTTS2's `emptyGeneration`) surfaces instead of the cancel — put a throwing
+  checkpoint between the loop and any partial-result consumer. Bail AFTER the first append so
+  a trailing `concatenated([])` can't crash; place stage-seam checks BEFORE shape-sensitive
+  consumers (Trellis2: partial feats crash flexiPost).
+- **CAN-3 honesty rules of thumb:** the manifest is ground truth for `longRunImplied` (stale
+  briefs/docs mislead — ddcolor's re-baselined 4.54 GB peak flipped it); a flat pre-1.14
+  footprint (no peakActivationBytes) defeats the long-run implication on genuinely heavy
+  packages (anima) — flip the suite assert when the split lands; "iterative model" ≠ iterative
+  execution (SEA-RAFT's loop is lazy graph construction — the cadence test is whether an
+  eval/item/throwing-emit sits inside the loop); "streaming" describes causality, not
+  execution (Mimi encodes one whole-clip graph). RunProgress-evidenced means per-UNIT
+  reporting, not phase presence.
+- **Mechanics:** the 0.9.x→0.27.0 engine pin jump is painless (pre-1.14 manifests compile
+  unchanged); an `exact:` mlx-swift pin blocks it (engine floors 0.31.5 — relax to `from:`);
+  ~a third of the fleet had no MLXServeConformance test dep and several repos had NO test
+  target at all — the CAN suite is a fine first test target. Core loop fixes ride patch tags
+  on the core repo + an explicit `from:` bump in the wrapper.
+
+## First `stt` capability — Nemotron 3.5 ASR streaming (2026-07-10)
+
+The first speech-to-text provider (contract 1.20.0). A cache-aware FastConformer-RNNT
+language-port (Python-MLX `Blaizzy/mlx-audio` `nemotron_asr` → Swift-MLX). Lessons:
+
+- **A streaming model does NOT need a streaming engine contract.** Nemotron's cache-aware
+  chunked decode is package-INTERNAL memory discipline (bounded STFT + per-layer attention/conv
+  ring-buffer caches), not a request surface. It maps cleanly onto the one-shot `run()`:
+  capture a complete utterance → one `run(STTRequest)` → transcript. Live partial hypotheses are
+  the deferred companion-N2 token-streaming contract; don't reach for it to ship voice input. At
+  ~27× realtime a 12 s clip transcribes in ~0.5 s, so turn-based feels instant anyway.
+- **A cache-aware STREAMING model still parity-tests bit-identically.** Because the streamed
+  encoder is frame-identical to the offline chunked_limited encoder at the native chunk size, the
+  per-chunk goldens (cold caches at chunk 0, WARM caches at chunk 2) matched the Swift port to
+  max|Δ|=0.0 on the CPU stream. Capture goldens by MONKEYPATCHING the real Python module (class-
+  level `__call__`, not instance — dunders resolve on the class; instance patching silently
+  captures nothing), never by reimplementing — zero reimplementation drift.
+- **`stt` is genuinely long-run — add it to `CancellationConformance.longRunCapabilities`** as
+  part of the capability bump (arbitrarily long audio via the chunk loop). Cadence of record:
+  `decode/chunk`, RunProgress-evidenced (the per-chunk `shouldContinue` poll is the same seam
+  that reports `.decode`). The core exposes cancellation as a `shouldContinue: () -> Bool` closure
+  threaded into the decode loop (not `Task.checkCancellation` inside the core — keeps the core
+  engine-free); the wrapper polls `Task.isCancelled` in it and throws `CancellationError` after.
+- **Reuse `mlx-audio-dsp` + bake the filterbank.** The slaney 128-mel filterbank is a baked
+  safetensors resource generated by the Python oracle (the "bake fixed transforms" rule); the
+  STFT/window/framing/power-spectrum/mel-apply primitives already live in `MLXAudioDSP`. Only the
+  signal-level (not kaldi per-frame) pre-emphasis and the streaming frame-range mel needed hand-
+  porting. Add `MLXFast` + `MLXRandom` as explicit mlx-swift products (not pulled transitively).
+- **Illegal-key remap belongs in the loader's `sanitize`, not the module tree.** Reference lists
+  with heterogeneous entries (`prompt_kernel.{0,2}` Linear-around-a-ReLU, `joint.joint_net.2`
+  after activation/Identity, sparse `pre_encode.conv.{0,2,3,5,6}` among ReLUs) have dotted numeric
+  indices that are illegal Swift `Module` keys — remap to `prompt_kernel_0` / `joint_net_2` /
+  dense `convs.N` in `sanitize`, keep `@ModuleInfo(key:)` clean. `verify: [.all]` then passes with
+  653/653 tensors; relax to `[]` only for the quantized checkpoint (quantize the tree first when
+  `.scales` keys are present / config carries `quantization`).
+- **STT input decode = AVFoundation.** `STTRequest.audio` is a canonical WAV `Audio` artifact of
+  any rate/channels; `AVAudioConverter` → 16 kHz mono Float32 is the package's front door (write
+  the bytes to a temp file so `AVAudioFile` can parse the container). The consumer app's mic
+  capture produces the same 16 kHz mono WAV via `AVAudioEngine` with `setVoiceProcessingEnabled`
+  (AEC keeps the app's own TTS out of the mic — required for barge-in in a talking companion).
+- **Consumer-app SPM interlock (the sequencing trap):** a companion app that pins the engine by
+  REMOTE version can't reference a new capability (`.stt`) until that engine is pushed + tagged —
+  its other packages (LLM/TTS/embed) all transitively resolve the same engine, so the whole graph
+  must move together. Develop the kit against a local `git worktree` of the engine capability
+  branch; write the app code against the new symbols and verify the path via the kit's own live
+  engine-gate CLI (register→prepare→run through `MLXServeEngine`); but the app's SPM-graph repoint
+  + Xcode build is BLOCKED on publish — don't do throwaway `pbxproj` surgery against an untagged
+  branch. Sequence the graph move with the tag.
+
+## Pre-quantized artifacts as a WeightSourcing DOWNLOAD lever (MLXMageFlow, 2026-07-23)
+
+Klein's configuration notes flagged "pre-quantized repos are a later download-size
+optimization" — MLXMageFlow implemented the pattern, and it's worth copying for any
+multi-GB DiT wrap:
+
+- **Quantize ONCE offline** (a `--quant-export` CLI mode on the gate executable) into a
+  single self-describing safetensors (metadata carries bits/group_size/kept-block
+  recipe); publish it next to the port's other artifacts. Consumers
+  `quantize(model:filter:)` with the SAME filter reconstructed from metadata, then load —
+  **no bf16 peak on the loading machine** (vs Klein's quantize-at-load, which needs the
+  full bf16 resident first).
+- **Quant-tiered `weightSources`**: the int8/int4 configurations EXCLUDE the bf16
+  `transformer/*` glob from the components source and add the quant file to the artifacts
+  source — a fresh 16 GB machine downloads 4.3 GB instead of 7.7 GB and never
+  materializes weights it can't hold. MAT tests should assert the tiering
+  (`testWeightSourcesQuantTiering`).
+- Two-source shape (upstream components repo + port artifacts repo) round-trips fine
+  through `MaterializationConformance.check` — implement `missingWeightSources` to check
+  each source's own satisfaction predicate and return only the missing ones.
+- Quant recipe + gate thresholds belong in the mlx-porting skill (common-pitfalls #40-41:
+  baseline-relative int8 gating on high-dynamic-range DiTs; trailing-block bf16
+  protection; the MLXNN middle-block quantize() container fatal).
+
+## Tool-calling LLM wraps: format-exact prompts + the two stream planes (LFM2.5, 2026-07-24)
+
+The mlx-lfm-llm-swift port (LFM2.5-8B-A1B, `lfm2_moe`, Path-A over stock `LFM2MoEModel`)
+surfaced two lessons that apply to ANY tool-calling LLM wrapped through mlx-swift-lm:
+
+1. **swift-jinja's `tojson` breaks tool grounding — render the tools line yourself.**
+   Passing tools through the chat template kwarg renders them with swift-jinja's `tojson`:
+   COMPACT, ALPHABETICALLY-ordered JSON. Python (`json.dumps` inside HF's jinja) renders
+   `", "`/`": "` separators with dict-insertion key order (`name → description →
+   parameters`) — the format in the training data. On a 1.5B-active model that drift alone
+   flips a temp-0 tool call into an "I don't have access" refusal. Fix: the package renders
+   the `List of tools: […]` system line itself in exact `json.dumps` style and byte-pins it
+   in a unit test against the Python oracle's rendering. Check this for every tool-calling
+   port; small models are far more format-sensitive than benchmark numbers suggest.
+
+2. **The prompt-format-vs-numerics oracle experiment (one run, both answers).** When Swift
+   output diverges from the Python reference, feed the SWIFT-rendered prompt (from a
+   `--dump-prompt` debug lane: `processor.prepare` → decode tokens) to Python mlx-lm at
+   temp 0. Same output as Swift ⇒ numerics are fine and the PROMPT is the defect (this
+   port: byte-identical refusal, so the LFM2MoE forward was proven correct in the same
+   experiment that isolated the formatting bug). Different output ⇒ real numerics hunt.
+   Add `--dump-prompt` to every wrap's gate CLI — it's ~20 lines and turns "model behaves
+   weird" into a one-experiment bisect.
+
+3. **`ChatSession.respond` silently DROPS tool calls — drive `streamDetails`.**
+   mlx-swift-lm auto-detects `ToolCallFormat` from `config.json`'s `model_type` (any
+   `lfm2*` prefix ⇒ `.lfm2`; others get `.json`) and `ToolCallProcessor` EXTRACTS the
+   marker-delimited call text out of the token stream as structured `.toolCall` events.
+   The string plane (`respond`/`streamResponse`) never sees them (upstream docs:
+   `toolDispatch` "required for toolcalls if streaming strings"). A wrapper whose contract
+   is canonical TEXT must collect `streamDetails` events and re-serialize `.toolCall`s
+   back into the model's emission format (`<|tool_call_start|>[name(arg="v")]<|tool_call_end|>`)
+   appended to the text. This silently bites ANY model whose model_type maps to a
+   detected format — even when the package never passes template tools.
+
+4. **MS-1/MS-2 store layout (engine ≥0.33): do NOT copy the gemma-era nested pattern.**
+   `ModelStore.directory(for:)` is now `<root>/models--<org>--<name>/` (HF cache
+   convention) with materialized files either flat under it (engine-executed, contract
+   1.24) or in `snapshots/<commit>/` behind `refs/` (hub client). New configurations:
+   `missingWeightSources` = explicit-dir probe, then `defaultMissingWeightSources`
+   (MS-2 — accepts both layouts); resolution = explicit dir → `snapshotDirectory` →
+   flat `directory(for:)`. Since 1.24 the ENGINE materializes pre-`load()`; the package's
+   own materialize pass is a blessed defensive re-check, not the primary path. Tests that
+   hand-build `<root>/<org>/<name>` are asserting the pre-MS-1 world and will fail against
+   ≥0.33 engines (how this was caught).
+
+5. **Always-reasoning models: mode-mapped think-stripping is package work.** LFM2.5 emits
+   `<think>…</think>` unconditionally (no template disable; `preserve_thinking` only
+   affects history rendering — the template strips prior turns' reasoning itself). The
+   package strips the block for default/`.direct`/`.companion` (TTS-safe canonical text;
+   split on the LAST `</think>`, mirroring the template's own
+   `content.split("</think>")[-1]`), returns raw under `.thinking`, and returns EMPTY for
+   a truncation mid-think (never leak reasoning into TTS-bound text). Budget maxTokens for
+   reasoning + answer (~512+ for a companion turn).
+
+6. **Measure the resident floor POST-LOAD, never post-warmup — and cross-check the CLI against
+   the in-app harness.** The LFM port's first declaration (floor 6.5 GB / activation 0.5 GB) was
+   wrong in BOTH directions because its `--mem-bench` ran a warmup generation and called the
+   footprint after it "the floor." A post-run floor conflates resident weights with retained run
+   intermediates: it over-reads the floor *and* subtracts that inflation back out of
+   `peak − floor`, collapsing the activation toward zero. Corrected (floor read immediately
+   post-load, `clearCache` first): floor **4.89 GB** — within 0.1 GB of the 4.83 GB on-disk
+   weights, i.e. a near-perfect mmap load — and activation **1.31 GB**, ~2.6× what the bad
+   measurement claimed. Same trap as the NAFNet/DDColor "floor-not-dropping" finding, and exactly
+   what `MLXEngineTestKit.ValidationRun` documents; a hand-rolled CLI bench does not inherit that
+   fix, so **make the CLI mirror `ValidationRun` semantics** (floor post-load; post-run retention
+   reported as its own number) and validate a port through BOTH the CLI and the in-app
+   `ValidationHarness`. They agreed on the floor to 0.13 GB here; the discrepancy is what exposed
+   the bug. Corollary: pass a real `clearCache` — **`engine.trimCaches()`**, which the engine
+   exposes (with `gpuPoolSnapshot()`) precisely so a consumer gets pool handling without importing
+   MLX. `ValidationHarness(clearCache: nil)` makes the floor read ~0.1 GB HIGH and activation
+   correspondingly LOW; linking MLX into an app target to avoid that is the WRONG fix.
+
+7. **Report measured usage — `LLMResponse.usage` (contract 1.26.0, engine ≥ 0.35.0).** An `llm`
+   package is expected to populate `promptTokens` / `generationTokens` / `promptSeconds` /
+   `generateSeconds`. The rule is **measured, never estimated**: take them from what the runtime
+   reported, never derive them from the text. `nil` means "this package doesn't report usage" and
+   is *not* zero — a consumer must not backfill an estimate.
+   - **Freeform path:** the counts already arrive. mlx-swift-lm emits one `GenerateCompletionInfo`
+     at end-of-stream as `Generation.info`; a package on `streamDetails` just adds `case .info`.
+     Packages still on the string plane (`ChatSession.respond`) never see it and must migrate —
+     budget that honestly, especially where a **held** session backs KV-cache reuse.
+   - **Structured / constrained-decoding path:** there is no `.info` — the package drives
+     `TokenIterator` itself, so it counts and times its own loop. Start the prompt clock *after*
+     `processor.prepare(…)`: upstream's `promptTime` likewise excludes templating/tokenization, and
+     starting earlier silently charges tokenization to prefill and makes the two paths
+     non-comparable.
+   - **Free win in the same change:** `GenerateCompletionInfo.stopReason` maps 1:1 onto
+     `FinishReason`, so capturing `.info` also retires a hardcoded `.stop` — a `maxTokens`
+     truncation finally reports `.length`.
+   - **For reasoning models, count the reasoning tokens.** LFM2.5 always emits `<think>…</think>`
+     and non-thinking modes strip it from the canonical text. Usage counts what the model
+     *generated*, not what was surfaced: decode throughput measures work done. Counting only
+     visible text under-reports a reasoning model badly and makes it look slower than a
+     non-reasoning model doing strictly less work.
+   - **Comparability caveat to document on the field:** `promptTokens` is not comparable across
+     packages that differ in KV-cache reuse (a held session prefills only the new suffix).
+     `generationTokens` / `generateSeconds` is the axis to quote cross-model.
+
+## Sibling checkpoints — adding a fine-tune as a family, not a mode (Lucida on BiRefNet, 2026-07-25)
+
+Third instance of this shape (FireRed on QwenImageEdit, Klein base-vs-distilled, now Lucida on
+BiRefNet), so it's a pattern worth following rather than re-deriving. A fine-tune of an
+already-ported base is **a configuration + a manifest, never a port** — but *how* you expose it
+matters more than the plumbing.
+
+**Establish "zero port" before writing anything.** Diff the converted key set and the *resolved* arch
+config against the base. Lucida: 754 tensors in → 687 out, zero keys or shapes differing vs BOTH
+upstream bases, and the resolved config (from the upstream `Config` class, not `config.json` — which
+carried no hyperparameters at all) matched the Swift default exactly. That diff is the whole
+justification for reusing the core; do it first and it costs minutes.
+
+**Prefer a distinct PackageID over a new `mode`.** `Mode` is an open string tag, so a third tier
+*compiles* — but the **manifest is per-registration**, and that is what you actually need separated:
+
+- **license posture.** A caveat on the new checkpoint (Lucida's training data mixes research-only
+  datasets) would otherwise gate *every* consumer of the shared surface. Here that would have hit
+  `EngineMatteProvider` and the TRELLIS.2 multi-view front door for a checkpoint they never ask for.
+- **provenance.** `Provenance.sourceRepo` is the engine's download/marker key — a shared manifest
+  credits the wrong repo in the storage panel.
+- **footprint.** A single-tier fine-tune usually has a *smaller* resident floor than the multi-tier
+  base package (one graph, not two).
+
+Mechanics: `PackageRegistration(manifest:makePackage:)` takes an explicit manifest, so the sibling
+reuses the existing package *class* under its own identity — no new conformer type.
+
+**Then close the cross-family hole this opens.** Once one class serves several checkpoint families,
+`mode` becomes able to select *another family's weights*. Fix it structurally, not by convention:
+route every (variant, mode) → (repo, override, resolution) through **one** method on the
+configuration, so repo and resolution are always decided together. A family with a single checkpoint
+should **ignore** modes it doesn't advertise rather than falling through to a sibling's repo — and
+have the sibling's `makePackage` **refuse a mismatched variant**, so the manifest's identity can
+never be published over another family's weights. Both are one-line guards with a regression test
+each; without them the failure is silent and looks like "the model is worse than the benchmark says."
+
+**Adding a field to a shipped `PackageConfiguration` needs hand-written `Codable`.**
+`PackageConfiguration: Codable`, so a synthesized decoder makes a new `variant` field **required**
+and breaks every persisted registration. Write `init(from:)` with `decodeIfPresent` + defaults, and
+test-decode a pre-field JSON payload.
+
+**Footprint by transfer, but measured.** If the sibling runs the same graph at the same resolution as
+an existing tier, that tier's in-app `phys_footprint` numbers apply — but *demonstrate* it rather than
+asserting it: the CLI smoke reported byte-identical floor/peak for both families, and the peak matched
+the exact MLX figure whose in-app equivalent was already on record. Then declare resident ABOVE the
+measured floor (an initial draft under-declared it, which makes the governor under-reserve).
+
+**Retrofits ride the sibling change well.** This package was the fleet's last non-MAT image package;
+adding a checkpoint is exactly when you're touching the weight-resolution path anyway, so the
+WeightSourcing/MAT retrofit cost almost nothing extra. One honest consequence to surface rather than
+hide: declaring *all* servable tiers means a fresh install materializes tiers it may never use
+(here +440 MB for the 2048 checkpoint, previously lazy). That is correct once the package no longer
+downloads for itself — an undeclared tier just fails on a fresh store — and it is the concrete
+argument for mode → PackageID (P1b), which would restore laziness by construction.
+
+## Replacing an unshippable HOST dependency with Apple-native signals (Mage-VL codec path, 2026-07-27)
+
+Some upstream pipelines depend on a host binary or native ext we won't ship — **ffmpeg** (license +
+tens of MB), a CUDA extension, a bespoke C++ codec. On Apple Silicon a surprising amount of that is
+already in the SDK, or already in our own fleet. Before writing off the capability — or vendoring
+the binary — work this list.
+
+**First, check the registry, not just `mlx-swift-lm`.** The Path A/B question ("does the runtime load
+this architecture?") is about the *backbone*. It misses the other half: **does the fleet already
+provide the auxiliary signal this pipeline needs?** Mage-VL's codec path needed dense motion; we had
+already ported, published and validated **SEA-RAFT** under `opticalFlow`. Grep
+`mlx-engine-swift/docs/model-registry.md` by *capability* before planning any host dependency —
+the answer to "port something complementary" is sometimes "you already did."
+
+**Then check what the SDK gives you free.** Verify against the actual headers
+(`xcrun --sdk macosx --show-sdk-path`), not from memory — availability moves.
+
+| Upstream needs | Apple-native source | Notes |
+|---|---|---|
+| Dense motion / optical flow | `VTOpticalFlowConfiguration` + `VTFrameProcessor` | `API_AVAILABLE(macos(15.4), ios(26.0))`; `qualityPrioritization` normal/quality; submission mode `.sequential` for an ordered walk. **Zero weights, hardware-accelerated, ships with the OS.** |
+| I-frame vs P-frame | `kCMSampleAttachmentKey_NotSync` on the sample buffer | No decode required |
+| Per-frame encoded byte cost | `CMSampleBufferGetTotalSampleSize`; `AVSampleCursor` walks samples **without decoding** | The true bitcost, exactly — just not per-block |
+| Motion-compensated residual | Backward-warp *t−1* by the flow, subtract | The warp an `opticalFlow` package already exists to do |
+
+**Consume a sibling package by vendoring its library product, not by engine composition.** One
+package invoking another *capability* through the engine is an unproven pattern and buys nothing.
+`mlx-sea-raft-swift` exposes `SEARAFTMLX` as a public `.library` with `SEARAFT(.s)` +
+`loadWeights(...)` documented as supported — take that. (Check the donor's **C14** row first: a
+public library path that bypasses the package's `load()` historically also bypassed
+`train(false)`, which is exactly why C14 moved those calls to the loader choke point.)
+
+**Bake-off before you commit.** When both a ported model and an OS API can supply the signal, measure
+them against each other on the *consuming* metric, not on the signal's own accuracy. If the consumer
+percentile-normalizes and sums the signal into coarse blocks, it is extremely forgiving — a
+0.116 px EPE model may beat the free OS path by nothing measurable, in which case the zero-weight
+path wins on residency, packaging and cold start simultaneously.
+
+**Two doctrines carry over from `mlx-porting`** and belong in the plan, not discovered late:
+substituting a signal the model was **trained** on is a distribution shift (gate on agreement with
+the original, not on quality), and the unshippable dependency is still fine as a **dev-time oracle**
+to bake those fixtures — an oracle is not a dependency. See `mlx-porting` pitfalls #43 / #43b.

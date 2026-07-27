@@ -11,6 +11,21 @@ Note on code style: `mx.eval( )` is written with a space between parentheses in 
 3. **Architecture missing from mlx-lm/mlx-vlm/mlx-audio** → add one file (mlx-lm) or one sub-package (mlx-vlm, mlx-audio), then re-run the official converter. See `manual-port-templates.md`.
 4. **Multi-component pipeline** (T2V, T2I, 3D, audio-gen, multi-component diffusion) — mlx-forge recipe + standalone `-mlx` fork. **This is the only case where `mlx-forge` is the answer.**
 
+## Route from the safetensors HEADER before downloading (cheap pre-flight)
+
+Before pulling tens of GB, read just the safetensors **header** to decide the conversion path and confirm the key contract. The format is an 8-byte little-endian header length `N`, then `N` bytes of JSON (`{key: {dtype, shape, data_offsets}}`). A ranged HTTP GET of the first few MB captures the whole header for a ~1000-tensor model:
+
+```bash
+curl -sL -r 0-4194303 "https://huggingface.co/ORG/REPO/resolve/main/model.safetensors" -o head.bin
+```
+```python
+import json, struct
+n = struct.unpack("<Q", open("head.bin","rb").read(8))[0]
+hdr = json.loads(open("head.bin","rb").read(8 + n)[8:]); hdr.pop("__metadata__", None)
+```
+
+From the header alone you learn: **tensor count**, **dtype** (already bf16 → no cast step), and — decisively — the **key namespace** (`blocks.N.self_attn.q` original-Wan vs `transformer.` diffusers vs `model.diffusion_model.`). That routes the conversion before a single GB moves: AnimeGen-T2V shipped original-Wan keys, so it **skipped `premap_diffusers_to_wan`** and fed straight into `sanitize_*`. The same header also lets you **preflight a LoRA→base key mapping** — map every LoRA module name to its target base key and `assert` all are present in an already-converted base checkpoint — catching a merge-target mismatch before downloading the LoRA.
+
 ## Tier 1 — official converters (canonical invocations)
 
 ### LLM via `mlx_lm.convert`
@@ -484,6 +499,8 @@ for key, w in weights.items():
 Before writing a recipe, check `https://huggingface.co/mlx-community` — someone may have already converted the base model. If so, the recipe only needs to port any custom head / adapter / LoRA on top.
 
 Also grep the **installed mlx packages** (`mflux`, `mlx-lm`, `mlx-arsenal`) for an existing *implementation* of a standard component before porting it — often you can lift the module and just load the checkpoint's own weights into it. In the Lens port, `mflux`'s `Flux2VAE` matched the Lens diffusers VAE at **246/250 keys** (only `to_out.0.`→`to_out.` + the standard conv transpose), and its `decode_packed_latents` already encoded the model-specific bn latent de-norm + unpatchify. Lifting it (instantiate the mlx class → derive the key map empirically against the checkpoint, exactly as you'd diff a model's own params → load) beat re-porting a whole conv VAE. Derive the key map by instantiating the mlx module, `tree_flatten`-ing its params, and diffing the name+shape sets against the checkpoint safetensors — the conv-transpose mismatches and ModuleList-index renames fall out automatically.
+
+**A full fine-tune of an already-ported base collapses to a weights-swap — do this diff FIRST.** If the candidate is a fine-tune of a base you already converted (same architecture), it ships ONLY the delta — the fine-tuned backbone weights — and *everything else is reused from the base*: VAE, text encoder, tokenizer, scheduler, config, and any MoE/expert-routing logic. The conversion is then: run the base's existing `sanitize_*` on the new weights, copy the base's `vae`/`t5`/`config` verbatim, and **gate on key-set equality** — `assert converted.keys() == base_ckpt.keys()` (0 added / 0 dropped) is the whole safety net (AnimeGen-T2V: a 1095-key contract, verified on both experts, turned the "port" into a weight conversion + copy). A model card whose diffusers example does `load_lora_weights(...) + set_adapters([hi,lo], [w1,w2])` is telling you to **merge those acceleration/distillation LoRAs OFFLINE into the checkpoint** — *not* apply them at runtime — whenever your loader reads a pre-merged flat checkpoint. Merge is kohya: `W += strength·(alpha/rank)·(up @ down)` per module, honoring each adapter's per-expert weight (AnimeGen: `[high 2.0, low 1.0]`). And **validate the conversion decoupled from the LoRA first** — render from the plain base recipe (full CFG, many steps) on the converted weights; if that produces coherent output the backbone conversion is proven, and a blocked/slow LoRA download (see pitfall #34) never blocks proving the port — the LoRA is only a few-step speed layer on top.
 
 ## Handoff to `mlx-recipe` skill
 

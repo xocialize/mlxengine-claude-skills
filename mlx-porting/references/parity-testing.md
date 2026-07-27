@@ -95,6 +95,41 @@ For fp16 inference:
 
 **Use a *relative* gate when activations are large.** The absolute `max_abs` targets above assume O(1) activations. Some layers don't cooperate: GPT-OSS hidden states (used as DiT conditioning in the Lens port) reach absmax ~1e4 in the deepest captured layers (they grow with depth: 234 → 920 → 2496 → 10688 across the selected layers). An absolute `1e-3` gate is impossible there. For those, gate on **cosine similarity** or **relative error** `max|Δ| / max|ref|` instead, and capture the intermediate magnitudes during the golden dump so you pick the right regime. (Cosine has a failure mode of its own: a few giant outlier dims can hold cosine high while smaller components are wrong — pair it with relative-error, and isolate per-layer if a deep-layer cosine looks suspiciously good. See common-pitfalls #10.)
 
+## When the CPU stream is NOT available — a custom Metal kernel forces a hybrid, phase-split gate
+
+The CPU-stream doctrine above has a hard exception: **a port containing a custom Metal kernel cannot
+run its full forward on CPU at all.** `MLXFast.metalKernel` dispatches are GPU-only and fail loudly —
+`[metal_kernel] Only supports the GPU` (`mlx-c/mlx/c/fast.cpp`). Ports with hand-written kernels for
+ops MLX lacks hit this: deformable convolution (DCNv2 in BiRefNet's `ASPPDeformable`), custom
+rasterizers, bespoke gathers.
+
+Do **not** respond by giving up and gating everything on GPU with a loose threshold. Split the gate by
+phase and pin each phase to the strictest stream it can actually run on:
+
+- **the kernel-free majority** (transformer/Swin backbone, resizes, merges) → CPU stream, tight
+  *relative* bound. In `mlx-birefnet-swift` this covered 357 of 687 tensors at relMax ≤ 8.3e-5,
+  cosine 1.0000000 — a genuinely strong statement.
+- **the phases that touch the custom kernel** (the decoder here) → GPU stream, judged on **cosine**.
+
+**On the GPU lane, judge cosine — never absolute maxAbs.** Measured on identical tensors in the same
+port, the same encoder output was `maxAbs 3.96e-3` on CPU and **`7.25` on GPU** — a ~1800×
+amplification of single-element outliers — while cosine held at 0.9999 on both. An absolute bound
+there produces either false failures or, if loosened to fit, a gate that can't fail. Report both
+metrics; gate on the honest one per lane.
+
+Two practical consequences:
+
+- **Label the stream in the gate output.** A parity line without its stream is unreadable six months
+  later — the same number means "bug" on CPU and "fine" on GPU.
+- **Don't pin the weight LOAD to CPU and the forward to GPU by accident.** Loading on CPU is fine
+  (`mlx-porting` even recommends it for quantized setups) but leaving a half-pinned graph makes the
+  first kernel dispatch fail confusingly. Let each phase scope its own pin.
+
+**Normalize tolerances to the reference's own dynamic range**, not to a single absolute number, whenever
+one gate spans tensors of different scale. Activations spanning ±32 and a matte spanning [0,1] cannot
+share an absolute bound — `maxAbs / (refMax − refMin)` makes the rows comparable. (Same miscalibration
+the Mage-Flow port recorded as "absolute 0.9999 was miscalibrated for this arch".)
+
 ## Isolation strategy when a test fails
 
 The goal is to find the innermost layer where divergence first appears.
@@ -195,6 +230,44 @@ Full pipeline parity is noisy because of samplers, schedulers, and free-running 
 3. Compare at each stage: noise → embeddings → latents → pixels.
 4. If embeddings match but latents don't, the denoising loop is wrong (scheduler, DiT, or CFG).
 5. If latents match but pixels don't, the VAE is wrong.
+
+## Gate at the largest production grid, on decoded output — small-grid latent cosines validate nothing above them (the `anima` / `qwen3vl` lesson)
+
+Grid-size-dependent failures are a recurring class: every gate passes at the convenient small
+size, and the port collapses past it, because the mechanism scales with the **position grid**
+(RoPE extrapolation/scaling, pos-embed interpolation, window/grid indexing), not with values.
+Two independent ports hit it in one week (2026-06/07):
+
+- **Anima (Cosmos-Predict2 T2I):** the parity suite ran at 256²-class latents and gated
+  cosine-on-latents — bit-exact. At the model's own base resolution 512² the output was garbage
+  tiles, and not even a port bug: the torch oracle collapsed identically (placeholder
+  deterministic-Euler sampler + RoPE past the validated grid; fix = `er_sde` + `rope_scale
+  (1,4,4)`). The suite never decoded one image at 512², so a "fully passing" port shipped a
+  broken product configuration.
+- **qwen3vl-mlx-swift (Boogu's edit conditioner):** conditioning goldens lived at the 576-token
+  vision grid (768² input) — cos 0.998 fp32. At the ~1024-token grid (1024² input → 64×64
+  patches) cosine sagged to **0.84** and was shelved as "slightly oversaturated, not
+  catastrophic." Downstream it WAS catastrophic — structured horizontal glitch-banding on every
+  edit with a ≈1 MP input — and it surfaced months later in in-app validation, not in any gate.
+
+Rules:
+
+1. **The gate matrix must include the largest grid the product will run** — max resolution, max
+   vision-token count, max sequence — not just the size that keeps the fixture small. Position
+   machinery only exercises its failure modes (interpolate vs identity, extrapolate vs table)
+   at the big grid.
+2. **Every shipping resolution tier gets a decoded-output eyeball gate** (image/video/audio),
+   not only latent cosines. Both failures above are invisible in "cosine looks fine-ish"
+   latents and unmissable in one decoded sample.
+3. **A cosine that degrades monotonically with grid size is a structural bug, not noise.**
+   0.998 at grid A → 0.84 at grid B means a different code path is running at B. Treat any
+   monotone-with-size sag as a blocker until root-caused — never file it as "minor residual."
+4. **Conditioned generators amplify "mild" conditioning error into full-image artifacts.**
+   There is no not-catastrophic conditioning divergence at the pipeline level until a decoded
+   image at that grid proves it.
+
+Related: pitfall #7 (production-scale spatial smoke), the `nafnet` realistic-input lesson above,
+and common-pitfalls #33 (the Anima sampler/RoPE fix itself).
 
 ## Making PyTorch an optional dependency
 
@@ -404,3 +477,31 @@ For discrete-output stages (sparse mesh decoders), gate on **exact topology** un
 input: feed the oracle's exact intermediate (structure coords + latent) into the Swift tail and compare
 voxel/vertex/face counts. TRELLIS.2 shape-decoder→mesh gave **vert ratio 1.000** (1.174M vs 1.174M) this
 way — isolating the new integration glue from RNG + version drift far better than any e2e `max_abs`.
+
+## CFG > 1: gate the PER-STEP MAP, not the accumulated trajectory (the Mage-Flow family lesson)
+
+At cfg 5.0 an accumulated-trajectory latent comparison **fails on a correct port**: guidance multiplies each step's ~1e-2 cross-dtype noise into the next step's input, error grows ~5×/step (observed 1e-2 → 8e-2 → 4.3e-1 over three steps), and the trajectories diverge chaotically into *different-but-equally-valid* images — the CFG-time analog of the quantized-generative doctrine above. Two correct gates:
+
+1. **Per-step reset**: feed the oracle's exact step-k input, run ONE velocity+step, compare to the oracle's step-k+1. A correct port sits flat at the cross-dtype noise floor (Mage: 1.1–2.5e-2 per step, every step); a real per-step bug grows or spikes. This same reset trick also localized the Mage timestep-embedding bug (pitfall #37) that accumulated comparison could only report as "everything diverges."
+2. **Decoded-image validity** at the real defaults (steps/cfg/negative prompt from the reference workflow).
+
+**bf16-vs-bf16 control runs: cast the INPUTS, not just the weights.** `fp32 input × bf16 weight` type-promotes back to fp32 compute, silently turning your "bf16 control" into the fp32 run you were trying to rule out — the giveaway is bit-identical numbers between the two configurations.
+
+Also: the two-forward CFG (`batch_cfg=False`) is mathematically identical to a fused cond+uncond varlen pack **because rotary attention depends only on relative positions** — the fused pack's shifted frame indices for the uncond copy change nothing. Gate against whichever the oracle can capture; implement whichever the port's attention supports.
+
+
+## Calibration anchors for cross-backend DECODED-RENDER gates (what "good" looks like)
+
+Measured on a correct, fully parity-locked port (Mage-Flow-Edit-Turbo, 4-step, cfg 1.0,
+identical injected noise, bf16-torch-CPU oracle vs bf16-MLX-GPU port):
+- **512² (2 048 packed tokens): pixel-identical** decoded renders.
+- **2048² (32 768 packed tokens): PSNR ≈ 34 dB, mean |Δ| ≈ 2.6/255** — visually the same
+  image; divergence is per-step cross-backend noise compounded over the trajectory.
+
+Use these as the bar: at cfg ≈ 1 / few steps, tens-of-dB PSNR is achievable and anything
+dramatically below it (≲ 20 dB, or different *content*) is a bug, not "backend noise."
+At high cfg the trajectory diverges chaotically (see the CFG section above) — decoded
+renders then match in character, not in PSNR. Also remember character differences that
+appear at a NEW size must be checked against the oracle at that size before being called
+a port bug — Mage's "painterly" 2048² texture appeared identically in the reference
+(model-native at 4× base), and Anima's real reference happily rendered 896×1152.

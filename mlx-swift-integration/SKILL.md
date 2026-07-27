@@ -1,6 +1,6 @@
 ---
 name: mlx-swift-integration
-description: Port a Python-MLX model into Swift and integrate it into MLXEngine (MLXServeCore/MLXServeEngine) — the Xocialize coordinator that drives MLX-Swift packages but does no inference itself. Use whenever taking an MLX-available model onto Apple Silicon — porting Python-MLX to a Swift-MLX `Core`, wrapping it as a `ModelPackage` (PackageManifest, RequirementsManifest, two-layer license gate, measured split QuantFootprint — resident weights + activation — adopting the 1.14 efficiency contract AND the 0.19.0 WeightSourcing auto-materialization/MAT gate born-clean), deciding capability-vs-mode-vs-specialty, consuming `mlx-swift-lm`, scaffolding a `-swift` SPM, wiring it into the test app, driving register/prepare/run via `MLXServeEngine` (multi-package per capability via PackageID), or reviewing against the C0–C13 conformance gate. Trigger phrasings — "port to Swift-MLX", "integrate into MLXEngine", "is this package engine-pluggable", "review against C0–C13", "capability vs specialty", "PackageConfiguration", "WeightSourcing", "MAT gate", "auto-materialize weights". Runs AFTER `mlx-porting` (PyTorch→Python-MLX parity); do NOT use it for that layer-translation step. Supersedes the `mlx-engine` skill.
+description: Port a Python-MLX model into Swift and integrate it into MLXEngine (MLXServeCore/MLXServeEngine) — the Xocialize coordinator that drives MLX-Swift packages but does no inference itself. Use whenever taking an MLX-available model onto Apple Silicon — porting Python-MLX to a Swift-MLX `Core`, wrapping it as a `ModelPackage` (PackageManifest, RequirementsManifest, two-layer license gate, measured split QuantFootprint — resident weights + activation — adopting the 1.14 efficiency contract AND the 0.19.0 WeightSourcing auto-materialization/MAT gate AND the 0.27.0 cancellation/CAN gate born-clean), deciding capability-vs-mode-vs-specialty, consuming `mlx-swift-lm`, scaffolding a `-swift` SPM, wiring it into the test app, driving register/prepare/run via `MLXServeEngine` (multi-package per capability via PackageID), or reviewing against the C0–C13 conformance gate. Trigger phrasings — "port to Swift-MLX", "integrate into MLXEngine", "is this package engine-pluggable", "review against C0–C13", "capability vs specialty", "PackageConfiguration", "WeightSourcing", "MAT gate", "CAN gate", "auto-materialize weights", "honor cancellation". Runs AFTER `mlx-porting` (PyTorch→Python-MLX parity); do NOT use it for that layer-translation step. Supersedes the `mlx-engine` skill.
 ---
 
 # Porting a model to Swift-MLX and integrating it into MLXEngine
@@ -88,6 +88,16 @@ the donor lift-vs-translate decision via flattened key paths), the **Metal-watch
 (CPU-stream weight loads, GPU-stream quantized forwards, never eval giant constant fills,
 ARC-scope big models), and where gates can actually run (CLI gate modes — the SPM test product's
 metallib is unreliable; plain `swift run` does GPU inference fine).
+
+> **⚠ Highest-cost gotcha — a quantized FORWARD must run on the GPU stream, never CPU.** When you
+> write a P7/quant parity gate, do NOT pin the whole test to `Device.setDefault(.cpu)` the way the
+> fp32 gates do. Quantized matmul is Metal-only; under a CPU pin it has no efficient path and
+> **silently grinds for HOURS** (state `R`, ~100% CPU, zero output — a Z-Image quant gate ran 10 h
+> before it was killed; it does NOT error or trip the watchdog, it just looks hung). Load + quantize
+> on CPU is fine; run the forward on GPU (the cosine gate absorbs the ~1e-3 GPU-vs-CPU-golden fp32
+> gap). Because the SPM test target's metallib is unreliable for GPU, put quant gates in the **CLI
+> lane** (`swift run … --quant-gate`), not an XCTest. Detail: `swift-port-parity.md` Metal-watchdog
+> family item 2.
 Read **`references/porting-conformance.md`** for the full topology, the `MLXToolKit` surface you
 implement against, the per-port conformance checklist (C0–C13), and a worked `ModelPackage` example.
 Read **`references/memory-harness.md`** for how to produce the empirical `minUnifiedMemory` every
@@ -107,8 +117,9 @@ which is where the silent-failure class surfaces (see `references/integration-le
                                       footprint + QuantConfigured (+ BudgetAware if there's a dtype lever) NOW,
                                       born sweep-clean, + WeightSourcing sources (quant-aware globs), born
                                       materialization-clean (see below); build OFFLINE vs MLXToolKit + tiny tests
-4. Add the runtime + load/run       → mlx-swift-lm (+ HF stack); implement load()/run() — load() auto-materializes
-                                      dir-less configs from the declared sources (v0.19.0); resolve packages; build
+4. Add the runtime + load/run       → mlx-swift-lm (+ HF stack); implement load()/run() — the ENGINE materializes
+                                      dir-less configs from the declared sources pre-load() (contract 1.24;
+                                      SelfMaterializing = opt-out), load() just loads; resolve packages; build
 5. Link into the app + smoke test   → manual Xcode "+"; registration → license gate → load → run (console first)
 6. Storage integration              → download into the chosen models folder + write mlx-package.json marker + refresh panel
 7. Promote to MLXServeCore          → register/admission via MLXServeEngine (multi-package per capability:
@@ -147,6 +158,20 @@ implementation: **`references/porting-conformance.md` §4**; the consumer/app si
 `needsDownload` routing, progress UI, live `MaterializationBench`) is the `mlxengine-implementation`
 skill's `references/materialization.md`.
 
+**And integrate born cancel-clean — the CAN gate (engine ≥ 0.27.0) adopts the same way.** In
+step 4, `run()` honors cooperative cancellation: `try Task.checkCancellation()` is the **first
+act** of `run()` (before `notLoaded` validation), then at every natural yield point (per denoise
+step / decode chunk / generated token / frame — the LTX-proven placements), rethrowing the
+`CancellationError` **unchanged** (never wrapped in a package error — the engine disambiguates
+user-cancel from governor-preempt by the type; user cancel surfaces `.cancelled` to the caller,
+governor preempt requeues). Report `RunProgress` at the same seams (contract 1.18) — per-step
+progress doubles as observable evidence of the checkpoint cadence. The package's own suite runs
+the offline **CAN-1..3** gate (`MLXServeConformance.CancellationConformance`: pre-cancelled-run
+propagation + classification, plus the checkpoint-cadence declaration for long-run manifests;
+sub-second packages declare `.subSecondRuns(reason:)`). The live timed cancel probe is
+`MLXEngineTestKit.CancellationBench` (`[CAN]`, Xcode-app harness only — replaces bespoke
+LTX_CANCEL_TEST-style levers). Full requirements: **`references/porting-conformance.md` §5**.
+
 Step 5 onward is where real bugs live. Drive every package through **one reusable validation
 harness** in the app (model picker → `evict` → `register` → `prepare` (timed) → `run` (timed) →
 decode), capturing load/run seconds, peak process memory, and the engine-charged footprint. **Quantify
@@ -175,11 +200,11 @@ own suite runs `MLXServeConformance.MaterializationConformance.check(…)` to pr
 
 | Read this | When |
 |---|---|
-| `references/swift-port-parity.md` | Stage 1 — the Python-MLX→Swift-MLX port itself: phase-gated workflow, key contracts, donor lift-vs-translate, cross-binding RNG/bit-exactness, the Metal-watchdog family, CLI gate modes, oracle-gate cross-validation. |
+| `references/swift-port-parity.md` | Stage 1 — the Python-MLX→Swift-MLX port itself: phase-gated workflow, key contracts, donor lift-vs-translate, cross-binding RNG/bit-exactness, the Metal-watchdog family, CLI gate modes, oracle-gate cross-validation, gate-matrix input-envelope coverage (largest production grid + decoded output per tier). |
 | `references/porting-conformance.md` | Stage 1 — package topology, the `MLXToolKit` contract surface, the C0–C13 per-port checklist, the v0.19.0 `WeightSourcing` auto-materialization requirements + MAT gate (§4), the worked `ModelPackage` example, discovery/loading expectations. |
 | `references/memory-harness.md` | Producing the empirical `minUnifiedMemory` (C-memory item) for each variant via `MemoryProbe`; the persistent/transient footprint split; how `MemoryGovernor` admits/evicts against it. |
 | `references/package-efficiency.md` | The library-revisit efficiency sweep: declare the split footprint, mmap/lazy weight load, per-stage load→use→evict, `BudgetAware` adaptive dtype. What we ask of every port (paired with the app-side seams in `mlxengine-implementation`). |
-| `references/integration-lessons.md` | Stage 2 — the living gotchas checklist: `mlx-swift-lm` runtime, Metal, silent-failure class, audio/visual wrappers, sandbox/storage, `MLXServeEngine` coordinator, retrieval, version drift, build environment. |
+| `references/integration-lessons.md` | Stage 2 — the living gotchas checklist: `mlx-swift-lm` runtime, Metal, silent-failure class, audio/visual wrappers, sandbox/storage, `MLXServeEngine` coordinator, retrieval, version drift, build environment, wrapper-level live gates (`--e2e-<surface>-pkg`) + test-input hygiene. |
 | `references/engine-contract.md` | Contract design + conformance REVIEW: capability/mode/specialty, canonical outputs, `metaData` governance, parameter planes, the C0–C13 summary, versioning, stop-and-ask. |
 | `mlxengine-implementation` skill → `references/materialization.md` | The CONSUMER/app side of v0.19.0 auto-materialization — folder pick, `needsDownload` routing, progress UI, the live `MaterializationBench` `[MAT]` measurement. Package-author requirements live here in `porting-conformance.md` §4. |
 | `~/Development/MLXEngine/mlx-engine-swift/docs/model-registry.md` | The living provider registry — every package's capability/home/availability/validation/efficiency state. Update the package's row as Stage 2 step 8 (it's maintained by integration, not regenerated). |

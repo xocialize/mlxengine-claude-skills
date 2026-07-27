@@ -629,3 +629,388 @@ The single bug that made the Anima port (Cosmos-Predict2-2B) produce a **regular
 - **Why the parity gate missed it (again #10, #32).** The DiT golden was generated at ONE small resolution (32×32) with the *same wrong ratio on both sides*, so it matched to cos 1.0. A frequency/extrapolation error is **invisible to a fixed-resolution parity gate** and only shows above the gate's size — you must gate the DiT at ≥2 resolutions, including the model's documented max.
 - **Where to get the true value.** Not the diffusers `config.json` default, not the reference model's `__init__` default (Cosmos `MiniTrainDIT` defaults every extrapolation ratio to 1.0) — the value is injected by the runtime's **per-checkpoint detection** (`comfy/model_detection.py`, keyed on `in_channels`/`image_model`/tensor shapes). For community-runtime models, read that detection block; it encodes the trained resolution behavior that the bare architecture defaults omit. (Same lesson as #10 "resolved config, not the json," sharpened to positional-embedding frequency.)
 - **Diagnostic shortcut.** Symptom *coherent-small + regular-tiled-garbage-large* ⇒ suspect **positional-embedding frequency** (RoPE theta / NTK / extrapolation ratio, or a learned pos-embed dropped in the port), not the sampler and not a layer. Confirm by rendering at 2–3 resolutions: a sampler bug degrades *everywhere*; a RoPE-frequency bug is **resolution-gated** with a periodic signature.
+
+## 34. HuggingFace **xet-backed** repos need the OPPOSITE download handling from classic repos — and neither auto-retries (the AnimeGen-T2V download lesson)
+
+A multi-GB weight download that stalls or 403s is usually not your network — it's the repo's storage backend. HF serves some repos through **xet CAS** (`cas-bridge.xethub.hf.co`) and others through the classic LFS CDN, and they fail in **opposite** ways:
+
+- **xet-backed repo** (e.g. `lightx2v/Wan2.2-Lightning`): native `hf_xet` is the working path. Forcing the classic path with `HF_HUB_DISABLE_XET=1` makes `huggingface_hub` fall back to an https GET that **403s `AccessDenied`** on the freshly-signed CAS URL — the object lives *only* in CAS, so there's no LFS blob to fall back to. Fix: let native xet run (do NOT disable it), wrapped in a resume-retry loop.
+- **classic/LFS repo** (e.g. `aidealab/AnimeGen-T2V`): native xet may **stall indefinitely** (hangs, zero bytes, no error). Fix: `HF_HUB_DISABLE_XET=1` to force the plain https CDN.
+
+Two traps that compound it:
+- **`hf` CLI does NOT auto-retry a mid-stream drop.** A CDN `RemoteProtocolError: peer closed connection ... (received X, expected Y)` aborts the entire command. Always wrap: `until hf download …; do sleep 10; done` — each attempt resumes from the incomplete blob. Presigned CAS URLs also **expire** while idle (later `AccessDenied`); a fresh `hf download` re-signs, so the same retry loop covers it. NOTE: don't lose `set -e`-style gating when you add the loop — a give-up path that still writes a "done" marker will kick off downstream conversion against a missing file.
+- **`hf_xet` reinstalls itself** — it's a hard dependency of recent `huggingface_hub`, so "make a venv without it" does NOT force the classic path; only the env var does.
+
+Diagnostic order: `HfApi().model_info(repo)` confirms public/non-gated (rules out auth/token) and lists the real file paths; a **header-only range fetch** (see `weight-conversion.md` "Route from the safetensors HEADER") confirms the file is reachable. If metadata resolves but the CAS GET 403s, it's the xet-vs-classic mismatch, not your token — flip the env var. This cost ~3h across one port before the pattern was clear; the flip is instant once you know the backend.
+
+Two related cache traps once downloads work:
+- **The HF cache accumulates MULTIPLE snapshot dirs when upstream pushes a new revision.** `SNAP=$(ls -d .../snapshots/*)` then matches several dirs and the newline-joined result becomes a garbage path (shows as `%0A` inside a file-not-found error). Select the snapshot that actually contains the files you need (`for d in .../snapshots/*/; do [ -f "$d/<required-file>" ] && SNAP=...; done`), not `head -1` (ordering is by hash, not recency).
+- **A new upstream revision is not necessarily a weight change.** Before re-running parity or re-publishing, compare the LFS `sha256` of the weight files across revisions via `?blobs=true` — README-only pushes are common (Mage-Flow's revision bump changed nothing but the card).
+
+### 34b. Xet's newest face: `resolve/` of a xet-backed file is ~0.5 MB/s per cold connection — parallel ranged chunks recover full speed
+
+Files uploaded with the modern hf CLI land in xet storage. Plain HTTP GET of
+`/resolve/<rev>/<file>` then streams through HF's CAS-bridge reconstruction at ~0.5 MB/s
+per cold connection (measured; the same host serves classic-LFS files at ~50 MB/s, and
+edge-cached xet files are also fast — so the slowness looks intermittent). Any Swift/naive
+HTTP downloader hits this; the python hf client avoids it via the xet protocol. Fix
+without the xet client: 8 concurrent Range requests written at offsets (the hf_transfer
+design) — measured 60–65 MB/s aggregate on a cold 4.3 GB xet file. Reference
+implementation: mage-flow-swift `MLXMageFlow/WeightMaterializer.swift` (6faa4cb).
+
+## 35. Keep a KNOWN-KERNEL-BUG REGISTRY and check it FIRST — the same broken kernel stranded three ports before it was recognized as one bug (the NAX split-K lesson)
+
+**The meta-lesson outranks the bug:** LTX hit a "bf16 DiT breaks above a size threshold" failure and worked around it; Boogu hit the SAME failure and sat sidelined for weeks behind an over-broad `useFP32DiT: true`; Mage-Flow hit it again and initially shipped full-fp32 — because the pattern was never recorded where the next port would look. When a port shows **dtype-dependent garbage/NaN that switches on at a size threshold**, check the registry below BEFORE debugging your math. Symptom fingerprint: bf16/fp16 garbage, fp32 clean; fine below a token count, broken above it; edit paths hit it earlier than t2i (packed target+ref doubles the sequence).
+
+**The bug (root-caused + fix-validated 2026-07-22):** mlx-swift ≤ 0.31.6 builds with `MLX_METAL_JIT=ON`, and the JIT path of `get_steel_gemm_splitk_nax_kernel` instantiated the kernel template with the **output** dtype (the fp32 split-K accumulator) instead of the input dtype → the JIT-compiled kernel read bf16 inputs as fp32. AOT metallib builds (PyPI wheels) instantiate correctly — **Python MLX was always clean; only mlx-swift failed.** Upstream: ml-explore/mlx#3797, fixed by PR #3810 (merged 2026-07-07); no mlx-swift release ≤ 0.31.6 ships it.
+
+- **Dispatch window** (`matmul.cpp`): half precision, M·N ≥ 2048², K ≥ 10240, K ≥ 3·max(M,N). In a transformer only the **FFN down-projection** (K = 4×hidden) can qualify — QKV/attn-out (K = hidden) never do. Qwen3-VL `down_proj` K=12288 crosses at 1024 tokens; Mage DiT `proj_out` K=12288/N=3072 at 1366; Boogu Lumina K=13568/N=3360 in M ∈ [1249, 4522]. Compute your own model's window from this arithmetic in 30 seconds — Anima (K=8192 < 10240) was RULED OUT this way without running anything.
+- **⚠ Corruption near the boundary is SUBTLE**: just past it, cos ≈ 0.998 / max_abs ~1e4 — passes a loose ≥0.99 gate. Deeper in, full NaN. Probe with strict thresholds (cos > 0.999 AND max_abs < 100).
+- **Correct workaround: row-chunk ONLY the qualifying GEMM at ≤896 rows** (output rows are independent → mathematically exact; bf16 stays ~2× faster than fp32 at half the memory). Do NOT run the whole model fp32 — that was the first instinct on two ports and it is over-broad. Reference implementations: `qwen3vl-mlx-swift` `MLP.downProjected`, `mage-flow-swift` `MageFeedForward.downProjected`, `boogu-image-swift` `LuminaFeedForward.downProjected`.
+- **Weights-free probes**: `Qwen3VLGate --matmul-probe-rand`, `MageFlowGate --nax-probe`, `BooguGate --nax-probe` (seeded LCG inputs, exact model shapes, strict thresholds). Run after ANY mlx-swift bump; on PASS delete the chunks. `boogu-image-swift/tools/check_mlx_swift_3810.sh` checks whether a tag vendors mlx ≥ `a8c3e9c`.
+- **Validating an upstream kernel fix before a release ships it**: `swift package edit mlx-swift --path <patched-checkout>` with the fix cherry-picked onto the vendored mlx submodule → probe + full render → `unedit`. A/B/A in under an hour; patched checkout kept at `mlxengine-image/WIP/mlx-swift-3810`.
+- **A fp32 component parity gate can NEVER catch this class.** Only a half-precision run at the production grid does. (Corollary of #32/largest-grid, sharpened: run the production dtype too, not just the production size.)
+- **The window is on the GEMM's INPUT dtype at dispatch, not the weight dtype** (the Flux2-Klein refinement, 2026-07-23). Klein's single-block `to_out` is the byte-identical broken shape (K=12288, N=3072) with bf16 weights, and the probe NaNs at its exact production M — yet production renders were always clean: the fp32 temb/modulation path type-promotes the whole activation stream (`fp32 mod × bf16 stream → fp32`), and fp32 GEMMs never dispatch to the broken kernel. So exposure analysis = shape window **AND** the runtime dtype of the actual matmul inputs (print `x.dtype` at the op). Two corollaries: (a) the same promotion that silently *defeats* a bf16 control gate (see parity-testing "cast the INPUTS") can silently *protect* production; (b) a later "bf16 activation speedup" that removes the promotion ARMS the bug — install the row-chunk as **dormant armor** with a probe, exactly as Klein v0.6.1 does, rather than concluding "not affected" and moving on.
+
+## 36. SAMPLER AND PROMPT DEFAULTS are part of the port surface — and an eyeball gate without a reference image ships broken ports (the Anima un-sidelining lesson)
+
+Anima sat sidelined as "fails at larger sizes." The 2026-07-22 investigation found **nothing wrong with the ported math** — every failure was a default, and the validation eyeball had no reference to compare against:
+
+- **The June "coherent at 512²" gate had passed structural blob garbage.** The archived validation render was objectively unusable — "prompt-correlated colors + vague silhouette" had been read as "coherent." **An eyeball gate needs a reference render beside it** (ComfyUI output, model-card sample); "looks prompt-correlated" is not a bar. This is how a broken port gets marked validated and sidelined for months.
+- **euler produced that garbage at EVERY size.** The model requires its card-default `er_sde`. The port HAD er_sde implemented but shelved it as "fragile on MLX — stochastic steps amplify divergence" (see #32b: it had even been proven correct by noise-injection!). The "fragility" was misattributed; with the right prompt defaults it is robust. A deferred "Phase-B beauty parity" item can actually be the difference between broken and working — retest shelved components when other variables change.
+- **The EMPTY negative prompt collapsed large sizes.** 1024² → confetti even under er_sde; with the reference workflow's quality-tag negative (`worst quality, low quality, score_1, ...`) 1024² renders fully coherent. For CFG-trained anime/danbooru models the negative prompt is load-bearing, not optional garnish. Port the reference's default negative, not `""`.
+- **The reference ComfyUI workflow JSON is ground truth and costs nothing to read**: `EmptyLatentImage` gives the intended resolution (Anima: 896×1152 — proving ~1MP works and killing the "model can't do large" theory), `KSampler` gives sampler/scheduler/steps/cfg (`er_sde`/`simple`/30/4–6), `ModelSampling*` gives the shift. Read it FIRST, before theorizing.
+- **Debug discipline that cracked it**: change ONE variable per render (a 3-variable "reference-matched" run produced a NEW failure mode and nearly derailed the diagnosis); and *deterministic pixel-identical output across framework versions ⇒ data/config/logic, never kernels* — that one observation eliminated the entire kernel-bug tree (incl. #35) in a single A/B.
+
+(The long-prompt washout mentioned here was subsequently root-caused — NOT the adapter, but a TE-tap semantic shared by the port's own oracle. See #39.)
+
+## 37. LOAD-BEARING dtype rounding: sinusoid tables and constant-folds must be reproduced at the reference's dtype — or BAKED, never recomputed (the Mage-Flow twin lesson)
+
+Two forms of the same trap, both from Mage-Flow-Edit, both invisible to component parity:
+
+- **The timestep embedding was bf16-rounded TWICE upstream** — the sigma (`timesteps.to(img.dtype)`) AND the frequency table (the whole reason upstream *vendors* its own `get_timestep_embedding` instead of using diffusers'). At scale-1000 sinusoid arguments a 0.2% bf16 rounding shifts cos/sin by whole radians, and the effect is per-sigma: exact at σ=1.0 (step 0 always looks right), maximal mid-schedule. **Layer parity was 6.8e-6 while the sampler was 105% wrong** — only an end-to-end per-step gate caught it. In an fp32 parity harness you must round to bf16 *explicitly* to match; "upgrading" the rounding away is a port bug (same family as the #31 return-dtype rule). Grep the reference for vendored copies of standard functions — the vendoring itself is the warning that a numerical detail diverges.
+- **Constant-folds evaluated at construction time happen in the PARAMETER dtype** (bf16 when safetensors are bf16 on disk, before any upcast). Mage's VAE folds every adaLN MLP at t=0 into buffers; recomputing that fold in another framework — even in bf16 — does not reproduce it (accumulation order differs). fp32 refold: ONE gate value off by 0.039 → 1.2 absolute error in exactly one channel **while cosine read 1.00000000** (a cosine gate passes it; a per-channel max-abs gate catches it). **Extract the folded buffers from the constructed reference model and ship them as weights** (Mage: 42 buffers, 0.39 MB replacing 37.7M params). Never re-derive.
+
+## 38. Provenance watermarks and exotic RNG stacks are part of the port surface — reimplement bit-exactly, gate each generator separately (the Gaussian-Shading lesson)
+
+Mage-Flow's latent init is not `randn`: it's a **Gaussian-Shading watermark** (SHA-256 payload → NumPy-PCG64 pad/index map → torch-MT19937 uniforms → `ndtri`), with an upstream detector and **no off switch**. Substituting plain randn silently strips the vendor's provenance mechanism (outputs stop being detectable) — a policy change, not a numerics choice; surface it, don't default it. Reimplementing the three generators bit-exactly is a half-day IF each stage is gated against its own dumped intermediate; end-to-end-only comparison is undebuggable. The traps found (each localized by its staged gate):
+- **NumPy `Generator.integers(0, bound)` is NOT `next_uint64() & mask`** — it draws **32-bit halves (LOW half of each uint64 first, then HIGH)** through **Lemire's multiply-shift** `(u32 * bound) >> 32` (no rejection for power-of-two bounds). And the key passes through **SeedSequence** before PCG64 (raw-key seeding reproduces nothing); `PCG_128BIT_CONSTANT(high, low)` makes `generate_state(4, uint64)[0]` the HIGH word.
+- **torch CPU `uniform_(dtype=float64)` takes the LOW 53 bits** of `(r1<<32)|r2` from MT19937. Taking the high bits instead reproduces *NumPy's* famous seed-42 sequence — plausible uniforms from the wrong generator, undetectable without the stage gate.
+- Marginally the watermarked noise is N(0,1), so **image quality never reveals a wrong implementation** — only bit-parity and detectability do. Exactly the kind of correctness that silently rots without a standing gate.
+
+## 39. YOUR OWN ORACLE CAN SHARE YOUR MISREADING — parity to it proves consistency, not correctness; the reference runtime is the only independent ground truth (the Anima TE-tap lesson)
+
+The Anima long-prompt washout survived a **fully green parity suite** because the MLX port and the hand-written torch oracle were transposed from the *same misreading* by the same author: both tapped the Qwen3 text encoder **pre**-final-norm, both omitted comfy's prompt-weight parsing. Port-vs-oracle agreed to 1e-4 at every length while renders collapsed. An fp32 length-sweep golden showed "exact match at 174 tokens" — exactly matching the *wrong* computation.
+
+- **The move that broke the loop: stand up the actual reference runtime as ground truth** — a headless ComfyUI (torch/MPS) driven by workflow JSON. Two payoffs in one run: its render of the failing 49-tag prompt was perfect on the same checkpoint (instantly killing every model-limitation theory and proving a port bug), and its **dumped intermediate tensors** exposed the divergence point immediately (context std ~25 vs comfy's ~3.8). For any community-runtime model, budget one reference-runtime render + tensor dump BEFORE trusting a self-written oracle — it converts "which of my two identical implementations is wrong?" into a one-comparison answer.
+- **The specific trap**: ComfyUI `layer="last"` returns the hidden **after** the final norm; `layer_norm_hidden_state=False` affects only *intermediate*-layer taps. A pre-norm tap is off-distribution for downstream consumers in a way that short inputs coincidentally survive and long/rich inputs collapse under — **"works on short inputs, garbage on long ones" is a distribution-shift signature, not a length-dependent numeric bug**. Fast discriminator: compare the stream's std against a reference dump (pre-norm ~25 vs post-norm ~3.8 — an order of magnitude, visible in one print).
+- **Comfy prompt parsing is port surface**: `\(` → literal paren, `(text:w)` weighting. Danbooru-style prompts are full of escaped parens; skipping the parser silently changes the ids.
+- **Corollary to #33: the detection-derived config belongs in your ORACLE too.** The Anima diffusers oracle drifted from MLX for months and was blamed on diffusers versions — it was missing the same `rope_scale=(1,4,4)` the port had once missed. When you fix a config value in the port, grep the oracle for the same default.
+- Swift note: for stochastic samplers, generate per-step gaussians on the CPU from an explicit counter stream (SplitMix64 + Box-Muller) — `mx.random` inside a lazy loop yields correlated draws (same trap as the Python-side #32 note).
+
+## 40. QUANT-GATE CALIBRATION: measure the bf16 baseline's OWN distance to fp32 before applying absolute per-pass thresholds (the Mage-Flow int8 lesson)
+
+The step-7 doctrine thresholds (int8 ≥ 0.9999, int4 ≥ 0.99 per-pass vs bf16) silently
+assume the bf16 production baseline is much cleaner than the quant delta. On
+high-dynamic-range DiTs that assumption fails: Mage-Flow's activations reach ~1.2e5 by
+the last block, and its **bf16 forward is itself only 0.999901 (deficit ~1e-4) from the
+fp32 oracle** — so demanding int8-vs-bf16 ≥ 0.9999 asks the quantization to be cleaner
+than the baseline's own noise floor. Every recipe (g128→g64→g32, block protection)
+"failed" at 0.99987–0.99988 while being effectively transparent.
+
+Fix: before iterating recipes, print THREE cosines — bf16-vs-fp32golden,
+quant-vs-fp32golden, quant-vs-bf16 — and gate int8 **relative**:
+`deficit(quant, fp32) ≤ 2 × deficit(bf16, fp32)`. Mage int8: 1.30e-4 vs 1.98e-4 → PASS,
+and e2e confirmed 43.9 dB vs the bf16 render. Keep int4's absolute 0.99 (coarse enough
+to be baseline-insensitive). Siblings without their own fp32 goldens gate absolute
+quant-vs-bf16 with thresholds transferred from the flagship's gated recipe.
+
+Corollary diagnostic: if halving group size (g64→g32) barely moves the per-pass cosine,
+the error is NOT weight-rounding-limited (outlier-channel / propagation regime) — finer
+groups won't help; layer protection or acceptance-recalibration is the lever.
+
+## 41. The LAST transformer block is the quant-sensitive one — the final norm amplifies its error into the output (and MLXNN can't skip a MIDDLE block anyway)
+
+Per-block quant-vs-bf16 cosines on Mage showed smooth accumulation everywhere EXCEPT a
+jump at the final block: block-10 img 0.999974 → final output 0.999835 — the modulated
+output LayerNorm amplifies last-block error ~1.6× into proj_out. Keeping the TRAILING
+block bf16 moved int4 from 0.9832 (FAIL) to 0.9911 (PASS) at ~0.3 GB cost. Mid-chain
+"dips" in a stream's cosine may be PROPAGATED error surfacing through joint attention,
+not that block's weights — protecting block 8's txt-side layers moved nothing (0.999810
+→ 0.999821); verify a block is actually the source before spending bytes on it.
+
+Mechanical trap: `MLXNN.quantize(model:filter:)` fatals with
+`UpdateError.mismatchedContainers` if a filter excludes a MIDDLE block of a ModuleList
+wholesale (the block contributes zero replacements → hole in the container). Excluding
+the TRAILING block is safe; to protect a middle block, exclude only SOME of its layers
+so it stays in the replacement map.
+
+## 42. A ported SAFETY FILTER's INPUT path must match upstream exactly — don't feed it the conditioning path's preprocessing (the Mage-Flow filter-resolution lesson)
+
+Pitfall #38 says trust features are part of the port surface; this is the corollary about
+their INPUTS. Mage-Flow's upstream pipeline screens the edit request on the ORIGINAL
+full-resolution image, then resizes to 384px long-edge ONLY for VL conditioning. The Swift
+port reused the 384px conditioning pixelValues/grid for the filter — numerically valid,
+looks harmless, and every parity gate stayed green (the filter has no golden). Result: a
+different vision-token grid shifted a borderline classification, and a benign anime-style
+edit was refused with a verdict whose OWN reason argued repeatedly that it didn't violate —
+while upstream torch on the same input returned a clean violates=false.
+
+Rules: (1) trace the reference's call ORDER for filter vs conditioning preprocessing — they
+often differ on the same image; (2) a classifier that emits its verdict field BEFORE its
+reasoning can't be sanity-checked by the reason text — verify borderline cases against the
+reference runtime (the #39 doctrine applies to filters too); (3) when a filter misfires,
+reproduce in the UPSTREAM stack before blaming the upstream model — our first read
+("Microsoft's Space would refuse this too") was wrong.
+
+## 43. An unshippable HOST dependency is usually a narrow SEAM, not an architecture — trace it to its interface before rejecting the port (the Mage-VL codec lesson)
+
+A port can look blocked by a dependency you can't ship — ffmpeg (license + tens of MB),
+a CUDA extension, a hand-rolled C++ entropy coder, any native ext. **Do not scope from the
+README's dependency list. Find the narrowest interface the dependency is consumed through,
+and read what actually crosses it.**
+
+Mage-VL is "codec-native": it allocates visual tokens by codec-derived importance, and the
+docs foreground H.264/HEVC and a CUDA neural codec (DCVC-RT, `.cu` kernels + a custom rANS
+coder). That reads as unportable. The whole surface turned out to be ONE call —
+`cv_reader.read_video_cb`, the native ext behind a PyPI package that needs ffmpeg on PATH —
+returning **four arrays per frame** (`motion_vector`, `motion_energy`, `residual_y`,
+`pict_type`). Everything downstream was ~110 lines of numpy: percentile-normalize two maps,
+weighted-average, sum into 16×16 patches. No entropy decoding, no bitstream structure.
+
+What to do, in order:
+
+1. **Grep for the import/subprocess boundary** and read the consumer, not the provider.
+   Count what crosses: shapes, dtypes, semantics. A small fixed set = a seam.
+2. **Ask what the signals are PROXIES for.** Codec motion vectors + P-frame residual are a
+   cheap approximation of optical flow + a motion-compensated residual — the model card said
+   so outright. Bit-allocation, saliency, energy maps and quality scores are nearly always
+   proxies for something computable another way.
+3. **Look for an alternative-input path the reference already has.** The scoring function
+   accepted `mv_energy` (a plain magnitude map at *any* resolution) as an explicit
+   alternative to the raw MV field — the substitution point was pre-built.
+4. **Check whether the signal is consumed UPSTREAM of the weights.** Here selection happened
+   in the data pipeline; the encoder took `pixel_values` + `patch_positions`. A preprocessing
+   seam is replaceable without touching a single weight — a far cheaper class of change than
+   an architectural one.
+5. **Check your own fleet before porting a replacement.** The substitute was a model we had
+   already ported, published and validated (SEA-RAFT under `opticalFlow`). Pitfall #12/#13
+   says diff the *backbone* against ported bases; this is the same reflex for **auxiliary and
+   preprocessing components** — search the model registry for a provider of the signal, not
+   just of the architecture.
+
+### 43b. Substituting a signal the model was TRAINED on is a DISTRIBUTION SHIFT, not an upgrade — gate on agreement, not on quality
+
+The trap that immediately follows #43. Once you find a *better* substitute (higher-accuracy
+optical flow, a sharper saliency map), the instinct is that better input ⇒ better output.
+Wrong: the weights were fit to the ORIGINAL signal's quirks and failure modes. A more
+accurate signal can move the model off-distribution.
+
+**Gate on agreement with the original signal first, benchmark second.** For a selection
+mechanism that means set-overlap (patch-selection IoU) against the true dependency-derived
+selection, per input, per tier — before any downstream metric, and long before integration.
+
+**And bake those fixtures by RUNNING the unshippable dependency, once, offline.** An oracle
+is not a dependency: ffmpeg on the dev machine at parity time costs neither license exposure
+nor package size, while shipping it costs both. Refusing to run it even as an oracle is the
+mistake — it leaves the substitution unfalsifiable, which is exactly the #39 failure mode
+(consistency mistaken for correctness).
+
+Escalation ladder when agreement is poor, cheapest first: **(1)** retune the fusion knobs the
+reference already exposes (weights, percentiles, normalization) — free; **(2)** try a
+different substitute backend; **(3)** fine-tune the projector or encoder on the substituted
+signal — only if 1 and 2 fail, and only with a measured gap to justify it.
+
+### 43c. Never choose a backend from a regime that cannot discriminate between backends
+
+The Mage-VL bake-off ran first on one clip — a panning soccer broadcast — and produced a clean,
+confident, **wrong** answer: the zero-weight OS optical flow (VideoToolbox) matched a ported
+SEA-RAFT to within 0.004 IoU, so "the ported model buys nothing, ship the free API."
+
+On a 10-clip corpus that inverted. SEA-RAFT beat the baseline on 9/10 clips vs VT's 7/10, and
+**VT lost outright on the talking-head clips** (−0.007, −0.013) where SEA-RAFT gained +0.052 and
++0.103. The reason is structural: the soccer clip is heavy *global* motion, where every flow
+method is equally mediocre and differences cancel. The discriminating regime was **static
+camera with small localised motion**, which the one clip did not contain.
+
+Rules that generalize past optical flow to any A-vs-B component bake-off:
+
+1. **Enumerate the regimes the component's quality actually varies over, then cover them.** For
+   motion: static-camera/subtle, static-camera/large-object, camera-pan, global+fast. For a
+   tokenizer: script, length, domain. Pick the axis the *difference* lives on, not the axis the
+   task lives on.
+2. **A tie is evidence the sample cannot discriminate**, not evidence the options are equivalent.
+   Treat "they're the same" as a prompt to widen the sample before it becomes a decision.
+3. **Report per-item, not just the mean.** The mean margin (+0.024 vs +0.037) understated a
+   reversal that per-clip rows made obvious — sign flips on specific regimes.
+4. **Hold everything but the regime fixed.** Encode/preprocess every input identically; here the
+   codec settings alone moved results by ±0.02, the same magnitude as the effect. If sources
+   differ in provenance, keep one item in *both* forms to measure that confound rather than
+   inherit it.
+5. **Carry a trivial baseline.** "Reuse the previous frame's answer" cost nothing and was the
+   only reason "VT loses here" was visible at all — against each other the two backends merely
+   looked close.
+
+## 44. VLM image-position logits are ill-conditioned — never gate on prompt-wide argmax agreement, and run a bf16-vs-fp32 SELF-control before chasing a cross-framework bug (the Mage-VL lesson)
+
+An image-heavy VLM prompt is mostly image tokens (Mage-VL: **2048 of 2075**). The "next token"
+prediction at an image position is off-manifold — the LM head applied to hidden states carrying
+visual, not textual, content — and it is numerically unstable. Two consequences:
+
+**(a) Prompt-wide metrics measure noise.** The Mage-VL port scored `cos 0.9797`, **argmax
+agreement 84%** against the reference, which reads as alarming — while producing **48/48
+integer-identical greedy tokens** and byte-identical text. Split by position:
+
+| positions | cos | argmax |
+|---|---|---|
+| image (2048) | 0.9796 | 83.8% ← 331 of 332 flips |
+| text (27) | 0.9955 | 96.3% |
+| **final (drives generation)** | **0.99948** | **100%** |
+
+**Gate the text stream and the final position.** The final position is the only one generation
+samples from; everything else is scenery. A prompt-wide number will either scare you off a correct
+port or, on a shorter prompt, hide a real break behind an image-token majority.
+
+**(b) Do NOT dismiss it as "those positions are coin flips" without checking.** The obvious excuse
+is that image positions have no confident prediction — here their oracle top1−top2 margin was
+**1.86, LARGER than the text positions' 1.18**. They are confident and unstable, which is worse
+than uncertain, and one position showed |Δ| 27.3 where the reference's own max logit was 14.9.
+
+**The control that settles it — and PyTorch cannot provide it: run YOUR OWN model at bf16 and at
+fp32 on identical inputs.**
+
+| comparison | image cos | image argmax |
+|---|---|---|
+| **ours bf16 vs ours fp32** (same code, pure precision) | **0.9683** | **80.8%** |
+| ours bf16 vs torch bf16 (cross-framework) | 0.9796 | 83.8% |
+
+Our own dtype change disagreed with itself **more** than we disagreed with PyTorch at matched
+dtype ⇒ the instability is a property of the model, the port is exonerated, nothing to chase.
+Had the self-control come back much tighter than the cross-framework gap, the reverse would hold
+and the difference would be a real port bug worth hunting.
+
+Generalizes past VLMs: whenever a cross-framework gap looks bad, bracket it with a same-code
+precision sweep before assuming the other framework is the reference for what "correct" means.
+
+## 45. The IMAGE DECODER is a second, independent divergence from the resampler — lifting a PIL-exact resize does not fix it (the Mage-VL Swift lesson)
+
+Pitfall-family lore says: match the reference *resampler* exactly (PIL bicubic, not CoreGraphics)
+because ViT preprocessing is resampling-sensitive. True, and `PILResize` ports exist for it. But
+there are **two** platform-specific steps at that seam, and fixing one leaves the other:
+
+```
+JPEG bytes ──[DECODER]──► RGB8 ──[RESAMPLER]──► resized ──► normalise ──► patchify
+             libjpeg vs               PIL vs
+             ImageIO                  CGContext
+```
+
+Mage-VL's Swift port lifted `PILResize` verbatim and still saw **every** patch differ from the
+reference (max|Δ| 1.42e-1, cos 0.9999318, only 18.9% of elements exact). Feeding both sides the
+**same already-decoded RGB8** collapsed it to **max|Δ| 2.4e-7, cos 1.0000000** — i.e. the resize,
+normalise and patchify chain was exact all along and the entire residual was the JPEG decoder.
+Measured at the byte level: CoreGraphics vs libjpeg differ by **mean 0.56 levels, max 10, 50%
+byte-identical, 0.56% worse than 2 levels** — the IDCT/chroma-upsampling signature, worst at
+saturated colour edges. (Not colour management: the test image had no ICC profile, and the
+context requested the same sRGB space.)
+
+**Diagnostics that make this quick:**
+
+1. **Read the error's SHAPE first.** Broad small error on *every* element ⇒ decode/resample.
+   Huge error on *specific rows* ⇒ ordering/patchify. They need completely different fixes, and
+   the shape tells you which within one command.
+2. **Give the harness a raw-input mode** (`--preprocess-raw <rgb8> <w> <h>`) alongside the
+   file-input one. Being able to lift the decoder out of the comparison is what turns "something
+   is off in preprocessing" into a one-line answer.
+3. **Close the arithmetic.** 10 levels / 255 / std 0.27 ≈ 0.145 vs an observed 0.142 confirms the
+   decoder fully accounts for the gap — no second unexplained term hiding underneath.
+
+**Then judge it, don't just report it.** cos 0.99993 is far above the ~0.98 that reads as clean
+(and the ~0.93 that reads as garbage), so it ships. But it is a *known, quantified* residual
+rather than an assumption — and the same family's filter-resolution case (#42) is the precedent
+for a borderline classification flipping on exactly this size of input shift. If a downstream
+verdict ever looks marginal, this is the first thing to take back out of the loop.
+
+
+## 46. When the model's THESIS is a selection/importance mechanism, ablate the mechanism against an ARBITRARY control — and check the control arm actually varies (the Mage-VL selection lesson)
+
+Some models sell a *mechanism*, not just weights: codec-derived patch importance, token pruning,
+adaptive resolution, expert routing, retrieval scoring. Porting it faithfully reproduces the
+mechanism — it does **not** tell you the mechanism earns its keep, and that is what decides how
+much engineering the mechanism deserves downstream.
+
+Mage-VL's thesis is "spend visual tokens where a codec spends bits". Three arms on identical
+frames at an identical budget — **dense** (no selection), **motion-ranked** (the mechanism's
+spirit), **arbitrarily-ranked** (a hash — the control) — gave:
+
+* With one **anchor frame** kept whole: every arm answered correctly to **15× compression** at
+  7–10× the speed. Ranking made no difference.
+* With the anchor removed (100% of budget ranked): motion-ranking answered **wrong**
+  ("0-0, England and Germany") while the **arbitrary** control answered right.
+
+So the anchor — not the clever ranking — was the mechanism. And the "smart" prior was actively
+*worse* than random.
+
+**Rules this yields:**
+
+1. **Always carry an arbitrary/random control arm.** A vs B tells you which is better; A vs B vs
+   random tells you whether either is doing anything. Without it, two priors that both do nothing
+   look like agreement and read as validation.
+2. **Check how much of the budget the control arm actually varies.** Mage-VL keeps the anchor
+   frame wholesale, so at a tight budget the anchor was 252 of 256 tokens and the ranked arms
+   differed in **4** — an "agreement" that measured nothing. Print the ranked fraction next to
+   every result, and provide a flag that disables the always-kept component so the mechanism can
+   be isolated. This is the single easiest way to fool yourself here.
+3. **Sweep the budget until something breaks.** A mechanism that looks irrelevant at 4× may be
+   load-bearing at 30×. If nothing ever separates, say so — that is a finding.
+4. **Beware priors that are anti-correlated with the answer.** A *motion* prior concentrates
+   tokens on what moves and starves what is static — and scoreboards, captions, logos, UI and
+   labels are static. For any question whose answer is written on the screen, motion-importance
+   discards exactly the region that answers it. Saliency/energy/entropy priors have their own
+   versions of this blind spot; name the question type before trusting the prior.
+5. **The ablation is also a bug-finder.** Mage-VL's ran once and immediately surfaced a real
+   defect: the attention mask was built from the DENSE grid while the selected sequence was
+   sparse (`Shapes (1,1,16128,16128) and (1,16,4096,4096) cannot be broadcast`). A subset that
+   happened to be the right length would have silently mis-grouped attention instead. Sparse
+   paths exercise shape assumptions dense paths never touch.
+
+**The payoff is often that the port gets SIMPLER.** Here the conclusion was that the part of the
+codec's contribution that carries answers is the periodic full-frame anchor — which needs no
+codec, no motion vectors and no optical flow. A whole substitution effort was vindicated for a
+better reason than it was designed on, and the expensive half of the mechanism turned out
+optional. Run the ablation before building infrastructure to serve the mechanism.
+
+
+## 47. "Passes the parity harness" ≠ "works through the framework's own entry points" — and the model card's usage snippet is part of the port surface (the Mage-VL upstreaming lesson)
+
+A Tier-2 port can be parity-locked to 48/48 token-exactness and still be BROKEN for every actual
+user, because the parity harness constructs the model and calls it directly — bypassing the
+framework's `load`/`generate` plumbing, which is the only surface a PR adds and the only surface
+users touch. Mage-VL hit **three** such gaps, none visible to any parity gate:
+
+1. **The checkpoint's remote-code processor was torch-native** — `prepare_inputs` died with
+   `ones_like(): must be Tensor, not array`. Fix: an in-repo numpy/mlx processor installed via
+   `install_auto_processor_patch` (the qwen3_vl pattern). Bonus: pass `trust_remote_code=False`
+   EXPLICITLY in its loads — configs with `auto_map` otherwise make transformers prompt
+   interactively on every load.
+2. **No `prompt_utils` entry for the model type** → `apply_chat_template` emitted NO image
+   placeholder. Failure shape worth recognising: vision ran fine and produced 2048 features that
+   had zero slots to land in (`Shapes (5242880) and (0)`); the arithmetic points at the PROMPT,
+   not the vision tower.
+3. **`get_input_embeddings` returned a bare array** where the generate dispatch expects
+   `InputEmbeddingsFeatures`.
+
+Rules:
+
+- **Before claiming PR-readiness, run the framework's own top-level flow** (`load` →
+  `apply_chat_template` → `generate`) on the real checkpoint. Read the target repo's
+  CONTRIBUTING for the concrete bar (test-file entry, formatter, unittest invocation).
+- **The published model card's usage snippet is a CLAIM — execute it as part of publishing**,
+  ideally against the published bytes with stdin closed (catches interactive prompts). Mage-VL's
+  card promised `mlx_vlm.load` worked hours before it did.
+- **After any interface-shape change (even "mechanically transparent" wrapping), re-run the full
+  e2e gate.** The InputEmbeddingsFeatures wrap touched the forward path; the regate is what makes
+  "transparent" a fact.
+- **Patch-script hygiene, because two of these fixes almost self-reported success falsely:** a
+  `str.replace` whose anchor a formatter has since reflowed no-ops silently — verify with grep or
+  a failing-test rerun after every scripted edit, and never print "patched" unconditionally.
+  Same family: `cmd | tail` reports tail's exit status, not cmd's.
