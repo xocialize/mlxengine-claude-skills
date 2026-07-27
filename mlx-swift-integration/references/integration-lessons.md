@@ -1117,6 +1117,32 @@ substituting a signal the model was **trained** on is a distribution shift (gate
 the original, not on quality), and the unshippable dependency is still fine as a **dev-time oracle**
 to bake those fixtures — an oracle is not a dependency. See `mlx-porting` pitfalls #43 / #43b.
 
+## A blocked comparison arm: state the REQUIREMENT, not the artefact (NIND/NAFNet, 2026-07-27)
+
+The NIND real-noise ranking shipped with its most important arm missing, recorded as blocked on:
+
+> *"NAFNet was not in the run — no PyTorch NAFNet in our oracle set."*
+
+That sentence is a **category error**, and it survived review twice because it sounds like a fact.
+The harness happened to be built from PyTorch references, so "no PyTorch checkpoint" got written down
+as the blocker. But the actual requirement is **a verified implementation of the model** — and we held
+two (an MLX-Python port and an MLX-Swift port, weights already on `mlx-community`). Adding the arm
+took ~20 minutes and **inverted the headline**: from *"strongest of the three we hold"* to *"replaces
+the incumbent"* (the incumbent scored **below its own input** at the lowest ISO).
+
+**The rule: when you declare an arm blocked, write the requirement, then ask what satisfies it.**
+"No PyTorch checkpoint" names an artefact you searched for; "no verified implementation" names the
+requirement, and only the second is actually checkable. The first quietly scopes the search to
+whatever the harness already used.
+
+**Mixed-runtime arms are fine, and cheaper than they look.** Nothing required every arm to share a
+framework — the comparison is between *models*. What it does require is that the odd arm out earns
+the same trust as the rest: because that arm ran in MLX while the others ran in torch, its key
+contract is **asserted in the harness** (`assert model_keys == ckpt_keys`), not assumed. A silently
+partial load would have handicapped exactly the model the table was trying to unseat — the one way
+the result could have been right for a bogus reason. **Assert the contract on the arm you most want
+to lose.**
+
 ## Probe weight AVAILABILITY before planning a row (image-restoration batch, 2026-07-27)
 
 **Two of fourteen queued ports turned out to have no obtainable weights**, and one of them cost a
