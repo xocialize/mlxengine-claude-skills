@@ -192,6 +192,63 @@ fixture** (a 20-line Python script in `tools/`). Same-fixture agreement to the 4
 converts "we loosened a gate" into "we verified equivalence; the published number was a
 different input distribution."
 
+## Window attention (Swin family): both porting errors are SHAPE-SAFE — gate the TABLES (SCUNet, 2026-07-27)
+
+Porting `WMSA` (cyclic roll + shifted windows + relative-position bias) is the first genuinely new
+shape in the image fleet, and it unlocks the whole Swin family. What makes it different from a
+conv-net port is that its two characteristic mistakes **produce a plausible image rather than an
+error** — same shapes, same value ranges, output that looks denoised:
+
+1. **The QKV head split is not per-head triples.** Upstream writes
+   `rearrange(qkv, 'b nw np (threeh c) -> threeh b nw np c', c=head_dim).chunk(3, dim=0)`. Because
+   `threeh = 3·n_heads` and the chunk is along the **head** axis, the projection's output channels
+   are ordered `[all q heads][all k heads][all v heads]`. Reshaping to `(heads, 3, headDim)` — the
+   intuitive reading — is shape-identical and silently wrong.
+2. **The SW attention mask covers only the LAST window row and column.** Those are the windows the
+   cyclic roll filled by wrap-around. Omit it and opposite edges of the image attend to each other,
+   which reads as mild artefacts, not a crash.
+
+And a third, in the checkpoint rather than the math:
+
+3. **`relative_position_params` is stored PRE-PERMUTED.** `__init__` allocates `((2w−1)², heads)`,
+   calls `trunc_normal_`, then **re-assigns the parameter** through
+   `.view(2w−1, 2w−1, heads).transpose(1,2).transpose(0,1)`. The checkpoint carries
+   `(heads, 2w−1, 2w−1)`. **Read the constructor, not the declaration** — this is a general rule for
+   any parameter a constructor reassigns after initialising.
+
+**The doctrine that falls out: gate the tables, at tolerance 0, before anything consumes them.** Add
+a gate rung *below* "the attention op matches" that compares the stored bias parameter, the gathered
+`(heads, w², w²)` bias, and the generated mask directly. On SCUNet all five landed at exactly
+`0.00e+00`. That converts a diffuse "the output is a bit off" into a named cause, and it is cheap —
+the tables are constants.
+
+Also: **block type is decided at CONSTRUCTION, not runtime.** `Block.__init__` downgrades `SW → W`
+when `input_resolution <= window_size`, and `input_resolution` is a *constructor argument* fed by the
+UNet's resolution schedule — not the size of the image you pass in. A port that recomputed it from
+the runtime shape would give some blocks the wrong attention. Encode the rule even when it is inert
+for the released config (SCUNet's smallest is 32 > 8, so nothing actually downgrades).
+
+## `Module` reflection collects EVERY stored `MLXArray` as a parameter (SCUNet, 2026-07-27)
+
+A constant lookup table declared as a plain stored property —
+
+```swift
+private let relIndex: MLXArray   // constant gather indices, NOT a weight
+```
+
+— shows up in `parameters()`. SCUNet has 28 attention blocks, so S0 failed with **28 missing keys**
+that no checkpoint could ever satisfy. Box it in a non-`Module` class (reflection walks past
+`.other`), which also lets every block share one instance when the table depends only on config:
+
+```swift
+final class RelativeIndexTable: @unchecked Sendable { let indices: MLXArray /* + a static cache */ }
+private let relIndex: RelativeIndexTable
+```
+
+The general form: **anything precomputed-and-constant must not be a stored `MLXArray` on a `Module`.**
+Alternatives are a `[Int32]` rebuilt per call (wasteful) or a `static` (not reflected, but then it
+cannot vary by config).
+
 ## Misc Swift-side gotchas (this port)
 
 - Published weight repos may ship NO tokenizer files — fetch from the canonical upstream repo
@@ -395,3 +452,96 @@ dual-grid→mesh, UV bake → glTF). All ops landed exact/float-eps, but four tr
   **do not `swift build`** (concurrent builds on one `.build` corrupt it) — the parent compiles +
   smoke-tests it on integration. Inspection-only agent code then needs a runtime smoke (write a
   cube GLB, re-read magic + parse JSON) before wiring into the real pipeline.
+
+---
+
+### Gate-threshold discipline: relative error, and loosening with evidence (image-restoration batch, 2026-07-27)
+
+Four conv/transformer restoration ports in one pass (FFTformer, HVI-CIDNet, Restormer, DRUNet)
+converged on three rules about thresholds. All three came from a gate that failed for the *wrong*
+reason.
+
+**1. Judge on RELATIVE error, not absolute.** Sub-op outputs span orders of magnitude within one
+model — a channel LayerNorm output sits near ±2 while a `Fuse` block on seeded inputs reaches ±2400.
+A single absolute tolerance either fails clean fp32 rounding on the large tensors or waves through
+real errors on the small ones. FFTformer's `fuse` gate "failed" at `max_abs 8.5e-4` while its cosine
+was `1.00000000` — the tensor simply had big values. Use `maxAbs / max|reference|` and report
+`max_abs` alongside for context.
+
+**2. 1e-6 is ON the fp32 noise floor for wide accumulations — don't set gates there.** Measured
+spreads: a conv accumulating 64+ input channels lands 1.6e-07…1.0e-06; one accumulating 384 lands
+~2.6e-06. A 1e-6 threshold on those produces coin-flip failures rather than signal. 2e-6 for
+primitives over ≤64 channels, 1e-5 where the accumulation is deep, and note WHY in the gate.
+
+**3. If you loosen a tolerance, prove the gate still catches what it guards.** The honest move is to
+run the actual failure mode as a probe and print the margin. Two worked examples now in-tree:
+
+- **Restormer pixel-shuffle**: the hazard is the channel-split ordering — `(r,r,C)` instead of
+  `(C,r,r)` compiles, runs, and silently scrambles the image. The gate runs that exact mistake and
+  reports `rel=1.30e+00`, **493,451× the observed rounding**, so a 1e-5 threshold retains ~5 orders
+  of discrimination.
+- **FFTformer resamplers**: an interior-vs-border diagnostic. Edge-handling bugs (wrong
+  `alignCorners`, off-by-one grid) concentrate error at the boundary; uniform rounding does not.
+  Measured `overall max == interior max (×1.00)` ⇒ rounding, not semantics.
+
+Both probes stay committed, so the margin remains visible instead of becoming folklore.
+
+### Weight-layout traps that are INVISIBLE to shape checks
+
+Two from this batch. Both load clean, pass every structural gate, and are silently wrong.
+
+**`ConvTranspose2d` is transposed differently from `Conv2d`** (DRUNet):
+
+| | PyTorch | MLX | transpose |
+|---|---|---|---|
+| `Conv2d` | `(O, I, kH, kW)` | `(O, kH, kW, I)` | `(0,2,3,1)` |
+| `ConvTranspose2d` | **`(I, O, kH, kW)`** | `(O, kH, kW, I)` | **`(1,2,3,0)`** |
+
+In DRUNet, `m_down3.4.weight` (strideconv 256→512) and `m_up3.0.weight` (transposed 512→256) are
+**both `(512, 256, 2, 2)`** — identical shape, opposite meaning. Only the KEY discriminates. Key the
+converter on names and **assert the expected count** (`assert n_transposed == 3`).
+
+**Attention biases may be stored pre-permuted by `__init__`** (SCUNet). `WMSA.__init__` re-assigns
+`relative_position_params` as `.view(2w-1, 2w-1, heads).transpose(1,2).transpose(0,1)`, so the
+checkpoint layout is already rotated against the naive `(…, heads)` shape. Read the constructor, not
+just the declaration.
+
+### Read the RELEASED config, not the constructor defaults
+
+SCUNet's constructor defaults to `config=[2]*7` → 9,662,892 params, which fails with 3 missing / 269
+unexpected. Every released checkpoint uses `[4,4,4,4,4,4,4]` → 17,946,072, and every upstream test
+script passes it explicitly. FFTformer's `Fuse` has the same shape of trap in miniature: it builds its
+inner block **without** passing `ffn_expansion_factor`, so that block takes the constructor default
+`2.66` while the rest of the model uses `3`. Both are visible in the weights if you look
+(`510/96 = 2.6562` vs `288/48 = 3.0`), and invisible if you don't.
+
+### Behaviour can be baked at CONSTRUCTION, not derived at runtime
+
+SCUNet's `ConvTransBlock.__init__` downgrades shifted-window → plain-window when
+`input_resolution <= window_size` — and `input_resolution` is a *constructor argument* fed by the
+UNet's decreasing resolution schedule, **not** the runtime input size. A port that recomputed it from
+the actual image would silently give deep blocks the wrong attention type. When a constructor takes a
+resolution/shape hint, check whether it changes structure.
+
+### Ablate to confirm dead code before "faithfully" porting it
+
+HVI-CIDNet's `forward` computes `i_dec2 = I_LCA5(...)` and overwrites `i_dec2` before any read.
+Rather than trust the reading, zero the module's weights and re-run: output changed by **exactly
+0.0**, while `HV_LCA5` / `I_LCA2` / `I_LCA6` each moved it by ~0.5–1.0. Declare the module (its
+weights are in the checkpoint, so strict loading needs it) and skip evaluating it. Cheap check,
+decisive answer.
+
+### Publish-dtype: measure per model — and fp16 can BEAT bf16
+
+The "small conv nets ship fp16" rule is not a fact. FFTformer measured end-to-end against its fp32
+reference: **bf16 → cosine 0.9839 / 30.09 dB** (disqualifying: the model's whole task signal is GoPro
+34.21 dB), **fp16 → cosine 0.99994 / 50.13 dB**. fp16 beat bf16 by **20 dB**, which inverts the
+LLM-world default. Peak activation was only ~2955, comfortably inside fp16's 65504 ceiling, so this
+was a **mantissa-precision** problem where fp16's 10 bits beat bf16's 7 — not a dynamic-range one.
+bf16 wins in LLM work for its fp32-equivalent *exponent* range; a small conv/FFT net with bounded
+activations wants the opposite.
+
+⚠️ **A torch-CPU dtype probe is not authoritative.** The same experiment reported fp16 as *NaN* on
+torch-CPU, which was an emulation artifact — flagged as needing confirmation, and disproved on MLX.
+The bf16 figure reproduced across both backends to 0.01 dB, which is what made *it* trustworthy.
+Run the dtype gate on the real backend.

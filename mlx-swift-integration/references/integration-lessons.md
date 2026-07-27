@@ -1116,3 +1116,162 @@ path wins on residency, packaging and cold start simultaneously.
 substituting a signal the model was **trained** on is a distribution shift (gate on agreement with
 the original, not on quality), and the unshippable dependency is still fine as a **dev-time oracle**
 to bake those fixtures — an oracle is not a dependency. See `mlx-porting` pitfalls #43 / #43b.
+
+## Probe weight AVAILABILITY before planning a row (image-restoration batch, 2026-07-27)
+
+**Two of fourteen queued ports turned out to have no obtainable weights**, and one of them cost a
+wasted Stage 0 because a licence ✅ was read as an availability ✅. They are different claims.
+
+- **P1 (Lai TransformNet)** — the only host 404s; Wayback never archived the binary, GitHub filename
+  search returns `total_count: 0`, no HF mirror, upstream issues unanswered since 2024.
+- **P6 (ESTRNN)** — 0 GitHub releases, 0 in-repo checkpoints, no HF mirror, no drive link in the README.
+
+**Cheap sweep, run it first:**
+
+```python
+# GitHub: in-repo checkpoints + release assets
+api(f"https://api.github.com/repos/{repo}/git/trees/HEAD?recursive=1")   # filter .pth/.ckpt/.safetensors
+api(f"https://api.github.com/repos/{repo}/releases")                     # assets[].name/size/download_count
+# HF: any mirror at all
+api(f"https://huggingface.co/api/models?search={term}")
+```
+
+Rank what you find: **committed in-repo** > **first-party release** > **first-party HF org** >
+third-party mirror > a drive link in a README.
+
+### 🔴 A third-party mirror's licence tag is not evidence about the weights it mirrors
+
+The queue recorded DRUNet and SCUNet as "third-party `deepinv` mirrors only — check the licence."
+`deepinv/drunet`'s card says `bsd-3-clause`; that is the **DeepInverse library's** licence blanketed
+across their HF org and says nothing about upstream, which is **MIT**. `deepinv/scunet` carries no
+licence at all. In fact **the original author publishes every weight first-party** in the
+[`cszn/KAIR` v1.0 release](https://github.com/cszn/KAIR/releases/tag/v1.0) under MIT — both rows were
+clean all along. **Look for the author's own distribution point before accepting a mirror**; authors
+often park a whole model zoo in one sibling repo's releases.
+
+## Footprints: the `--bench` MLX-peak number is not the admission basis
+
+A gate-style `--bench` that calls the core model directly and reads `MLX.GPU.snapshot().peakMemory`
+**bypasses register/prepare/the governor AND reads the wrong metric.** MLX-pool peak under-reads
+process `phys_footprint` by ~2.7× (the BiRefNet re-baseline). Declaring from it under-declares, and
+**under-declaring falsely admits on tight Macs** — the failure mode that matters.
+
+**Measured proof from this batch:** CIDNet's activation, extrapolated from sibling ratios, was
+declared **3.0 GB**; measured through the real engine it is **5.84 GB** — under by ~2×. Restormer's
+`--bench`-derived 4.5 GB was also under the true 4.76 GB. Only FFTformer was over.
+SCUNet is the widest miss yet: `--bench` read **1.33 GB**, the harness **4.38 GB** — **3.3× under**.
+**Across five ports the sign never flipped in a way you could rely on**, so treat `--bench` as a tool for
+*comparing tile sizes to each other* and never as a source for a declared number.
+
+**The fix is a per-package `*-validate` executable**, not app wiring:
+
+```swift
+let engine = MLXServeEngine(policy: .permissiveOnly, licenseEnforcement: .blocking) // match production
+let result = try await ValidationHarness.run(
+    engine: engine, registration: X.registration, configuration: cfg,
+    capability: .imageRestore, request: req,
+    isolate: true, clearCache: { MLX.GPU.clearCache() }, heartbeatLabel: "x")
+print(result.run.splitLogLine("x"))   // [x] SPLIT floor= peak= act= retain= engine= reserve=
+```
+
+`MLXEngineTestKit.ValidationHarness` is the **same code path and same metric** the archived
+MLXEngineImage app used — 150 ms `phys_footprint` sampling, floor read **post-load / pre-run**.
+`package-efficiency.md` explicitly blesses an `xcodebuild`-or-`swift run` executable reading
+`phys_footprint`. Making it a package target means the number is **reproducible** rather than a
+one-off, and it needs no Xcode project.
+
+Two caveats worth writing into the manifest comment: a CLI process carries no AppKit/Metal-view
+overhead, so absolute floor/peak sit a few hundred MB below a GUI app's (conservative in the *wrong*
+direction — declare with margin); and `retain=` above ~0.3 GB means the live model holds
+intermediates, which belongs in the transient, not residency.
+
+**Measure the model path, not the bypass.** CIDNet's validate feeds a deliberately *dark* image,
+because a mid-grey one trips its luma gate and would report a footprint with no model in it.
+
+## Tiling: when the model forces it, and the alignment nobody expects
+
+Two of four ports in this batch **could not run a 1080p frame full-frame**: FFTformer peaked at
+**39.55 GB MLX / 109 GB phys**, Restormer at **15.50 / 48.02 GB**. Both are small models (16.6 M and
+26.1 M params) — the cost is that level 1 runs at full resolution with a wide channel expansion
+(FFTformer 6×, plus a patch-decomposition copy). Predict it before measuring: `pixels × channels × 4
+bytes × live tensors` got within ~10% both times.
+
+**🔑 Tile geometry must align to the model's internal grid stride.** FFTformer's overlap sweep showed
+no receptive-field trend at all — instead overlaps 16/48/112 scored ~20.6 dB against ~26 dB at
+0/32/64/96. The error tracked `overlap % 32`, because FFT patches are measured from the **tile
+origin** and a level-3 patch spans 32 full-res pixels. Restormer has the same class of bug at stride
+**8** (three `pixelUnshuffle(2)` stages). Round tile *and* overlap down to the stride.
+
+**Judge a tiler on SEAM VISIBILITY, not PSNR-vs-full-frame** — they disagree. Restormer's overlap 0
+had the *best* PSNR (38.70 dB) while leaving a measurable seam (boundary gradient 1.31× interior);
+every aligned overlap ≥ 8 measured clean (1.09–1.20×). Full-frame is unattainable at production sizes
+anyway, so agreement with it is the wrong objective; boundary continuity is the right one. Metric:
+mean |gradient| at columns on a tile seam vs everywhere else.
+
+**Consequence for the manifest:** an internally-tiled package's peak is **one-tile-sized and flat in
+resolution** (Restormer: 2.58 / 2.59 / 2.62 GB at 512² / 1024² / 1080p) — 4K runs *more* tiles, not
+bigger ones. An untiled package's activation is **linear** (DRUNet 6.56 GB at 1080p ⇒ ~4× at 4K).
+Say which one you are in the footprint comment; it is the difference between "4K is free" and "4K is
+4× and untested."
+
+### How badly a model tiles is predicted by its attention LOCALITY (SCUNet vs Restormer, 2026-07-27)
+
+Same tiler, same seam metric, opposite verdicts — and the architecture says which you will get
+before you measure:
+
+| model | attention | overlap 0 | best overlap | seam ratio at best |
+|---|---|---|---|---|
+| Restormer | channel attention, reduces over the **whole feature map** | 1.31× (visible) | 32 | 1.09–1.20× |
+| SCUNet | 8-px **windows**, shifted; strictly local | 1.08× | 64 | **1.00×** |
+
+SCUNet's 1.00× means a tile boundary is *statistically indistinguishable from ordinary image
+content* — window attention tiles almost for free, because no computation ever sees beyond a window
+plus a few conv taps. Anything that reduces globally (channel attention, global pooling, an FFT over
+the whole plane) changes its statistics when you crop, so its tiles are genuinely approximate.
+
+**Practical read:** for a local-attention model, pick the overlap for memory and stop worrying; for
+a global one, the overlap sweep is load-bearing and PSNR-vs-full-frame will lie to you.
+
+**The alignment stride for a window-attention model is the WINDOW GRID, not the downsample factor.**
+SCUNet has three stride-2 stages (⇒ 8) but pads to **64**, because the deepest blocks want a full
+8-px window at 1/8 scale. The forward pass lays the window grid out from the **tile's own origin**,
+so a tile origin off the 64 grid shifts the window phase relative to its neighbour — a seam
+feathering cannot remove. Align tile *and* overlap; step is then aligned automatically.
+
+## Growing a capability vs adding one (two worked decisions, 2026-07-27)
+
+Both came up in one batch and resolved opposite ways. The discriminator is **request shape**, not
+subject matter.
+
+**New capability — `imageRelight` (HVI-CIDNet, contract 1.29.0).** Justified because the behaviour
+differs, not just the model: every checkpoint drives output toward a target mean luma *regardless of
+input*, so on an already-correct exposure it **degrades** the image (measured 23.37 / 20.99 / 16.10 dB
+across three checkpoints). A planner told to "restore" must not silently re-expose. It also needed a
+**bypass**, which restoration has no concept of.
+
+**Grow the existing capability — `strength` on `imageRestore` (DRUNet, contract 1.30.0).** The
+request/response shape was otherwise identical, so a separate capability would have fragmented a
+surface three packages already shared. Added `ImageRestoreRequest.strength: Float?` and
+`ImageRestoreResponse.appliedStrength: Float?`, both defaulted so existing backers are untouched.
+
+Two design points worth reusing:
+
+- **Report what you actually did, typed.** `appliedStrength == nil` distinguishes "this backer has no
+  dial" from "the dial did nothing" — a UI greys the control, a planner routes elsewhere. Same
+  reasoning gave `ImageRelightResponse.bypassed`. Do not bury this in `metaData`.
+- **Gate the parameter off surfaces that ignore it**: `descriptor(supportsStrength:)`, so a planner is
+  never offered a knob that does nothing.
+
+## Publishing hygiene
+
+- **`.gitignore` the HF download cache with a GLOB.** Round-trip verification (download the published
+  artifact, re-run the gates) leaves a cache under `oracle/`. Four repos in this batch committed it —
+  one with a 124 MB blob GitHub rejected outright, three that slipped through and bloated clones
+  (restormer 203 MB → 15 MB after cleanup). Ignore `oracle/hf*/`, not the one directory name your
+  script happened to use.
+- **Verify by fresh clone, not by local state.** After a history rewrite, `refs/remotes/origin/*` and
+  **pushed tags** keep old objects reachable. Deleting and re-creating the tag from the rewritten HEAD
+  was what actually shrank the clones. Then `git clone` into a temp dir and check `du -sh` plus the
+  largest blob — that is what a consumer gets.
+- **Round-trip every publish.** Download the artifact fresh and re-run S0 + the e2e gate against it.
+  Cheap, and it catches an upload that silently differs from what was gated.
