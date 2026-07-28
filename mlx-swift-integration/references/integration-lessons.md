@@ -1117,6 +1117,54 @@ substituting a signal the model was **trained** on is a distribution shift (gate
 the original, not on quality), and the unshippable dependency is still fine as a **dev-time oracle**
 to bake those fixtures — an oracle is not a dependency. See `mlx-porting` pitfalls #43 / #43b.
 
+## Product validation on public corpora — five things that changed a decision (2026-07-27)
+
+Three licence-clean public corpora (NIND, RealBlur, DPDD) were run against shipped packages in one
+day. Two shipped defaults changed as a result. The transferable parts:
+
+**1. Judge a shipped default on the TAIL, not the mean.** Our shipped deblur backer scored **−0.02 dB**
+against doing nothing, which reads as "harmless, just useless". Dumping per-image values told a
+different story: *median* **+0.18** (it helps slightly on most images), std dev 1.96, **41% of images
+hurt, 18% by more than 1 dB, worst case −18.70 dB** — gains and losses cancelling almost exactly
+(+180 / −187 dB over 300 images). The competing model was +1.29 with a −0.69 dB worst case and 0%
+hurt by >1 dB. **"Neutral on average" and "unpredictable" are opposite product verdicts and the mean
+cannot distinguish them.** Always dump per-image results and report win-rate + worst case; a default
+must be safe on the tail, not good on the median.
+
+**2. A published cross-dataset number may be a differently-TRAINED checkpoint.** The port queue row
+justified itself partly on *"RealBlur-J 32.62 — best cross-dataset of anything permissive"*. That
+figure is the **RealBlur-trained** checkpoint; we hold the GoPro-trained one, which scores −0.02 on
+the same test set. The row looked safe *because* a number from a checkpoint we do not ship was read
+as evidence about the one we do. **Before treating a benchmark cell as evidence, confirm which
+checkpoint produced it.**
+
+**3. Benchmark rank can INVERT on real data — and the paper's stated mechanism may be wrong.** A
+published study blamed *"GoPro training"* for real-blur failures. Our second arm was also
+GoPro-trained and transferred fine (+1.29), so the mechanism is **model-specific**, not
+dataset-specific. Meanwhile the models' GoPro ranking (34.21 > 32.92) reversed on real blur
+(−0.02 < +1.29). Reproducing a paper's *conclusion* is not the same as reproducing its *explanation*,
+and only the explanation tells you what to do next.
+
+**4. Build in a control with a known correct answer.** On the full official DPDD split our harness
+returned **25.98 dB — exactly the published figure**. That validated the *harness*, and retroactively
+strengthened every number the same PSNR/pairing code produced on the other corpora. When a pipeline
+agrees with a published value to two decimals, the pipeline stops being the thing to doubt. Pick at
+least one arm where you know what the answer must be.
+
+**5. Use the dataset's OWN evaluation protocol, and put the baseline through it too.** RealBlur pairs
+come from a two-camera beam-splitter rig and are **not** pixel-aligned; the authors' script does
+intensity matching + ECC homography alignment before PSNR. Skipping it understates every arm.
+Critically, the do-nothing baseline must go through the *identical* transform — otherwise the
+comparison is silently rigged toward the models. (Contrast NIND, where the premise was a locked-off
+camera and the right move was to *verify* pixel alignment before measuring. Check which world you are
+in; do not assume either.)
+
+**Corollary on premises:** every one of these runs asserted its pairing before trusting a number —
+NIND's alignment and brightness match, DPDD's positional pairing (source/target are *adjacent
+captures with different filenames*; correct pairing scored 20.4 dB vs 10.1 dB shuffled), NAFNet's key
+contract. A measurement harness should fail loudly on a bad premise, not quietly produce a plausible
+table.
+
 ## A blocked comparison arm: state the REQUIREMENT, not the artefact (NIND/NAFNet, 2026-07-27)
 
 The NIND real-noise ranking shipped with its most important arm missing, recorded as blocked on:
