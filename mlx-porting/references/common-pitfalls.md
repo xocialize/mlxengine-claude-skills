@@ -1010,6 +1010,16 @@ Rules:
 - **After any interface-shape change (even "mechanically transparent" wrapping), re-run the full
   e2e gate.** The InputEmbeddingsFeatures wrap touched the forward path; the regate is what makes
   "transparent" a fact.
+- **Your parity venv is dirtier than your users' env — gate in a DEPENDENCY-MINIMAL venv too.**
+  The first field report on the published Mage-VL port was this exact gap: `from_pretrained` used
+  `AutoImageProcessor`, which needs torchvision — present in the dev venv *because of the PyTorch
+  parity oracle*, absent on a standard MLX install. Worse than a crash: the AutoProcessor patch
+  dispatcher's `except Exception: pass` swallowed the ImportError and silently fell back to the
+  checkpoint's torch remote-code processor — recreating the exact failure the port existed to
+  prevent, for every real user, while every gate stayed green. Rules: construct framework-agnostic
+  components DIRECTLY (no `Auto*` resolution a fallback chain can reroute); run the publish gate
+  once in a venv containing only the package's own declared deps; and treat any `except: pass`
+  between you and a fallback path as a silent-wrong-behavior generator.
 - **Patch-script hygiene, because two of these fixes almost self-reported success falsely:** a
   `str.replace` whose anchor a formatter has since reflowed no-ops silently — verify with grep or
   a failing-test rerun after every scripted edit, and never print "patched" unconditionally.
