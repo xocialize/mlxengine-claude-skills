@@ -505,3 +505,31 @@ renders then match in character, not in PSNR. Also remember character difference
 appear at a NEW size must be checked against the oracle at that size before being called
 a port bug — Mage's "painterly" 2048² texture appeared identically in the reference
 (model-native at 4× base), and Anima's real reference happily rendered 896×1152.
+
+## A gate that compares SIZE cannot fail on a bug that preserves size (Audio8, 2026-07-30)
+
+A streaming decode shipped **approximate** and two gates stayed green through it. The gates were
+not weak in general — they were blind in exactly the direction the bug travelled:
+
+- The e2e gate compared the aggregated streaming response to the batch response **by byte count**.
+  An approximate decode emits exactly as many samples as an exact one, so the check was
+  structurally incapable of failing. Changing it to compare **content** caught the bug on the
+  first run.
+- The bit-identity gate was correct *and irrelevant*: it exercised `decodeStreaming`, while the
+  shipping path had been re-routed through `generateStreaming` — a **different function** that
+  windowed at the wrong seam. Proving function A exact says nothing about a caller that uses B.
+
+Two rules fall out, and they generalize past audio:
+
+1. **Gate on the value, not on a proxy for the value.** Length, shape, dtype, non-nil, "no
+   exception thrown", file size, token *count* — each is satisfied by a plausible wrong answer.
+   If the failure you fear preserves the property you assert, the assertion is decoration. Ask of
+   every gate: *what wrong output would still pass this?* If you can name one, tighten it.
+2. **Gate the SHIPPING path, not a function you hope it calls.** After any refactor that changes
+   who calls what, re-check that the gated entry point is still the one production uses. Cheapest
+   insurance: have the gate drive the same public API the app does.
+
+And the reason it was caught at all: an end-to-end sweep in the consuming app showed a *throughput*
+regression. Chasing that surfaced a *correctness* bug the dedicated correctness gates had missed.
+Broad, coarse, end-to-end measurement finds things targeted gates are pointed away from — keep
+both.

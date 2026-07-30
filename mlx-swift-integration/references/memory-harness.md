@@ -158,3 +158,36 @@ entry; with the probe: a committed `Bench/Reports/<modelID>-<quant>.json`) whose
 populates that variant's `QuantFootprint.residentBytes`, measured at the input envelope with
 `exceedsRecommendedWorkingSet == false` on every tier the variant's eligibility claims to support.
 Re-run when the model, quant, or input envelope changes.
+
+## If activation scales with an input dimension, don't sample the envelope — remove the growth (Audio8, 2026-07-30)
+
+`peakActivationBytes` was declared wrong **three times running** on one package — 5.00 → 7.20 →
+9.50 GB — and each revision failed for the identical reason, which is what makes it worth writing
+down. The transient was linear in generated frames (`≈ 1824 + 14.2 × frames` MB), and every
+declaration came from a *sample* that stopped short of the cap the package itself permits:
+
+| | basis | missed |
+|---|---|---|
+| 5.00 GB | one 9.2 s utterance | anything longer |
+| 7.20 GB | corpus sweep, longest 15.7 s | the default `maxFrames` cap |
+| 9.50 GB | the fitted model AT the cap | nothing — but only because the model was fitted |
+
+The escalation is the tell. Each fix was "measure more", and each one was overtaken. Three rules,
+in increasing order of value:
+
+1. **Sampling cannot bound a growing envelope.** If activation depends on an input dimension,
+   *fit the relationship* (a handful of points across a 50× range gave ±4%) rather than reporting
+   a maximum you happened to observe.
+2. **Declare at the parameter cap YOUR package permits by default**, not at the largest input you
+   tried. A caller raising `maxFrames` is opting out; a caller using the default is not.
+3. **Better: make the envelope constant.** Windowing the decode made it flat — 3.4–3.9 GB at 64,
+   128, 224 and 1035 frames alike — and the declaration dropped to 4.20 GB. That is worth more
+   than the 5.3 GB saved: `MemoryGovernor` reserves this number process-wide, so a *bounded*
+   figure is one the real envelope cannot exceed, whereas a fitted one is still a bet on caller
+   behaviour. Measured cost: ~14% throughput (median RTF 0.94 → 1.07).
+
+**Measure it where it ships.** The CLI harness read 3.40 GB for the same work the sandboxed app
+read 4.25 GB — the app carries allocation the harness does not. Declare from the in-app number; a
+headless smoke under-reads. (See also `field-issues.md` on Xcode pinning a published tag: an app
+"validating" a fix can silently be running the previous release, and the tell is the app
+reporting the *pre-fix* number.)

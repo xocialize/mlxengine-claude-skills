@@ -585,3 +585,47 @@ activations wants the opposite.
 torch-CPU, which was an emulation artifact — flagged as needing confirmation, and disproved on MLX.
 The bf16 figure reproduced across both backends to 0.01 dB, which is what made *it* trustworthy.
 Run the dtype gate on the real backend.
+
+## Before copying a windowing/streaming recipe, compute YOUR stack's receptive field (Audio8, 2026-07-30)
+
+`mlx-gepard-swift` streams by windowing its whole codec decoder: decode frames `[a−L, b)`, discard
+the first `L` frames' samples, bit-identical because every op is causal. `L ≈ 26` there. The recipe
+is sound and it transfers — but **where** you apply it is a per-model question, and getting it
+wrong is silent.
+
+Audio8's decoder is also strictly causal, so the argument holds. Its receptive field is not 26:
+
+- **Stacked local attention COMPOUNDS.** Its `post_module` is 8 layers of 128-wide causal window
+  attention, so the field is `8 × 127 = 1016` frames (~47 s), not 128. Any port with windowed or
+  sliding attention has this multiplier; a single layer's window is not the answer.
+- Windowing above that module was therefore impossible — the context needed exceeds a typical
+  utterance. Windowing it *at all* is also pointless: it is a transformer over `1024 × T`, while
+  the conv stack **below** it expands to 2048 samples per frame through 1536→96-channel
+  intermediates. That is where the memory lives, and its field is **11 frames**.
+
+So the seam is *between* them: run the long-context module once over the whole (or prefix) input,
+window only the expensive short-context half. Method: **backward extent propagation**, output →
+input — residual branches contribute `Σ (k−1)·dilation`, transpose convs convert fine→coarse as
+`ceil((e + k − 1) / stride)` — then verify empirically.
+
+**Two independent floors, and conflating them costs hours.** Measuring found drift that more
+context did not fix:
+
+| context | 11 | 16 | 32 | 64 | 128 |
+|---|---|---|---|---|---|
+| max_abs | 1.4e-3 | 1.4e-3 | 1.4e-3 | 1.4e-3 | 1.4e-3 |
+
+Identical at every context ⇒ **not** a receptive-field shortfall. The real variable was CHUNK size
+(exact at ≥48, drifting below): MLX selects different conv kernels for small inputs and their fp32
+reduction order differs from the full-length path. Derive the context floor; **measure** the chunk
+floor.
+
+Also: a receptive-field bound's contract is **sufficiency, not tightness** — derived 11 vs measured
+minimum 10 is correct and conservative. Asserting equality makes the gate fail on a safe
+over-estimate.
+
+**Interleave, or streaming buys nothing.** The first working version decoded only after the AR
+rollout completed: TTFA 9.51 s of a 9.90 s run — "streaming works" was true and useless. Decoding
+*during* generation is legitimate when the long-context module is causal (a prefix run yields
+identical values for that prefix), and took TTFA to 2.41 s. But note the cost: that path re-runs the
+prefix each chunk (quadratic). Don't route BATCH through it — batch wants the module run once.
