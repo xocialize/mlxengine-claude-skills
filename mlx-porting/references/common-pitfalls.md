@@ -1025,6 +1025,24 @@ Rules:
   a failing-test rerun after every scripted edit, and never print "patched" unconditionally.
   Same family: `cmd | tail` reports tail's exit status, not cmd's.
 
+- **Run the repo's own pre-commit hooks, at the PINNED versions, BEFORE you push the PR — a style
+  failure is not cosmetic if the test jobs declare `needs: style`.** mlx-audio#867 opened with
+  `style` red (black reflowed 3 files, zero logic) and `core`/`modular`/`tests` all reporting
+  **`skipping`** — which reads like "not applicable to this PR" and actually meant *the entire test
+  matrix never ran*. Triaging it as cosmetic would have left the port unverified upstream. Do
+  `pip install pre-commit && pre-commit run --all-files`, or read `.pre-commit-config.yaml` and run
+  the hooks at its exact `rev:` (black's output changes between releases — a locally-installed
+  newer black formats differently and still fails CI). Then, once style is green and the matrix
+  actually runs: the test job usually globs a whole DIRECTORY (`pytest mlx_audio/tts/tests/`), so a
+  neighbouring test you never touched can fail your PR — before blaming your change, run the
+  failures against a clean `upstream/main` worktree (`git worktree add /tmp/clean upstream/main`)
+  and confirm they fail there too.
+- **A formatter's diff cannot be cleared by `git diff -w`.** Black restructures lines (inserts
+  breaks, adds parentheses), so a whitespace-blind diff still shows changes and proves nothing —
+  it cannot distinguish "wrapped a line" from "changed an argument". Verify a reformat
+  BEHAVIORALLY: re-run the unit tests *and* the parity harness, and expect the numbers to be
+  byte-identical (arktts: waveform 7.493e-06 / greedy 102/102 before and after, to the digit).
+
 ## 48. A QUANTIZED checkpoint's shapes are PACKED, not logical — never infer an architecture from one, and always diff against an upstream original with a known-key control arm (the SeedVR2 r7B lesson)
 
 **Measured 2026-07-29.** Pitfall #12/#13's reflex — *diff the weight-key set against an already-ported base before scoping* — is right, and this is the trap inside it: **what you diff against matters as much as that you diff.**
