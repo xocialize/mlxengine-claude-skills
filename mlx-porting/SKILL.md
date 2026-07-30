@@ -75,7 +75,7 @@ Never skip step 5. Wrong output at step 6 with no layer-level parity data is unr
 
 Before writing any MLX code, read the PyTorch source skeptically for these traps. Full detail + past-failure examples in `references/common-pitfalls.md`.
 
-- [ ] **Diff against already-ported bases FIRST** — before scoping a Tier-3 port, diff the candidate's weight-key set (from the safetensors `*.index.json` — no download) and `config.json` against bases already in MLX (Wan, LTX, Lance, Qwen, SD3/FLUX). A fine-tune/wrapper of a ported base collapses to "reuse the base + port only the delta." Config knobs that name no new tensors are runtime params, not layers. This turned `bernini-r-mlx` from weeks to days. (#12/#13)
+- [ ] **Diff against already-ported bases FIRST** — before scoping a Tier-3 port, diff the candidate's weight-key set (from the safetensors `*.index.json` — no download) and `config.json` against bases already in MLX (Wan, LTX, Lance, Qwen, SD3/FLUX). A fine-tune/wrapper of a ported base collapses to "reuse the base + port only the delta." Config knobs that name no new tensors are runtime params, not layers. This turned `bernini-r-mlx` from weeks to days. **Every format's keys are readable without downloading:** sharded → `*.index.json`; single-file safetensors → first 8 bytes are the header length, then range-request the header; **torch `.pth` → it is a ZIP, so read the (ZIP64) central directory, pull `data.pkl` alone, and walk it with `pickletools.genops` — 130 KB of a 33 GB file, nothing unpickled.** 🚨 **But diff against an upstream ORIGINAL and carry a control arm on a checkpoint whose keys you already know: a QUANTIZED file's shapes are PACKED** (MLX 8-bit = logical ÷ 4), and the packed number is always plausible, so it yields a confident wrong architecture — that is how a nonexistent config field got written for SeedVR2's 7B. (#12/#13, #48)
 - [ ] **Constructor defaults** — every `__init__` default verified against `config.json` (`include_pi=True` when config says `false`, `groupnorm_eps=1e-5` when config says `1e-6`) silently ruins outputs.
 - [ ] **`attention_head_dim` misnomer** — in diffusers UNets `attention_head_dim=[5,10,20,20]` means `num_heads`, NOT per-head dim. Real head_dim = `channels // attention_head_dim`.
 - [ ] **QKV reshape pattern** — `qkv = cat([q,k,v]) → view(B,N,heads,3*hd) → split` means heads are **interleaved**, not stacked. Replicate EXACTLY.
@@ -211,6 +211,10 @@ Most published mlx-community ports are eventually loaded by Swift. The Swift sid
 - **Canonical 3-step load + safetensors dotted-key remap + `@unchecked Sendable` GPU-state classes** → `references/repo-layout.md` ("MLX-Swift consumer idioms").
 - **`Failed to load the default metallib` on `swift test`** → build via `xcodebuild` against the workspace by default; the bundle-copy + `default.metallib`→`mlx.metallib` rename is the escape hatch for SPM-CLI lanes that need it. → `references/repo-layout.md`.
 - **`Float64` → GPU crash, `Float * MLXArray` ambiguity** → `references/common-pitfalls.md`.
+- **`.newAxis` subscripts silently no-op unless EVERY axis is named** — Swift-MLX does not imply
+  trailing axes, so a transcribed `[:, None]` can leave the shape untouched with no error (or,
+  worse, still broadcast and produce wrong numbers). Port `[:, None]` as
+  `expandedDimensions(axis:)`. → `mlx-swift-integration` `swift-port-parity.md`.
 
 If "weights load, `model.update` succeeds with `.noUnusedKeys`, but inference is garbage *only on Swift*", it's almost always one of these three before a layer-translation issue.
 

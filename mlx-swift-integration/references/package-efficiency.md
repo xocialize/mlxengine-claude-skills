@@ -85,6 +85,19 @@ Keep findings grounded in `file:line`; rank by effort × value; be explicit abou
       activation/weight buffers in MLX's pool, so `phys_footprint` doesn't fall and `engine.evict` / R-MEM-1
       can't reclaim — process RSS then grows monotonically across model switches and OOMs on smaller Macs.
       (Found by the image app's acceptance run; fixed in BiRefNet first — apply to every package's `unload()`.)
+- [ ] **Verify the unload by ATTRIBUTION, not by `phys_footprint` alone.** Print all three after
+      `unload()`: `Memory.activeMemory`, `Memory.cacheMemory`, and process `phys_footprint`. The
+      combination is what tells you which world you're in, and `phys` on its own is *systematically
+      misleading* here:
+      | MLX active | MLX cache | phys | verdict |
+      |---|---|---|---|
+      | ~0 | ~0 | still high | **allocator/Metal page retention — NOT a package leak.** Nothing more to fix. |
+      | ~0 | high | high | `clearCache()` missing or ineffective — the bullet above |
+      | high | — | high | a real retained reference (a cached prefix, a memoized tensor, a closure capture) |
+      Audio8-TTS measured active 0 MB / cache 0 MB with ~10 GB of `phys` still resident, i.e. row 1 —
+      a clean unload that *looks* exactly like a leak if you only watch RSS. Gate on
+      `activeMemory ≈ 0`, and treat residual `phys` as informational. Without this split, a correct
+      package gets a leak hunt and a leaking one gets waved through on a lucky-looking RSS graph.
 
 ## Gotchas & measurement (validated on the LTX-2.3 run, 2026-06-30)
 

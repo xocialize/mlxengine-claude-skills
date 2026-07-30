@@ -26,6 +26,30 @@ mlx::core. Exploit that:
 - Expect: component forwards on real weights ≤ the mlx-porting thresholds with big margin;
   4-step e2e goldens ≤ 0.05; quant cosines agreeing with Python to the 4th decimal.
 
+**The one place "same semantics" is a LIE — subscripts. `.newAxis` needs EVERY axis named, and
+silently no-ops otherwise** (Audio8-TTS, 2026-07-30). Python/NumPy imply trailing axes; Swift-MLX
+does not. On a 3-D array:
+
+```swift
+r[.newAxis, 0..., .newAxis]              // → shape UNCHANGED [8,32,2]. No error. No warning.
+r[.newAxis, 0..., .newAxis, 0..., 0...]  // → [1,8,1,32,2]  ✅ every real axis named
+r.expandedDimensions(axes: [0, 2])       // → [1,8,1,32,2]  ✅ and unambiguous
+```
+
+Every `[:, None]` / `[None, :]` broadcasting idiom you transcribe from the Python rung is a
+candidate. Two failure modes, both bad:
+
+- **Shapes still broadcast** ⇒ wrong numbers, no error at all.
+- **Shapes don't** ⇒ a broadcast error at the CONSUMER, pointing at innocent code
+  (`[broadcast_shapes] Shapes (1,8,16,32) and (8,32) cannot be broadcast` was thrown three call
+  frames away from the bad subscript, inside SDPA).
+
+**Rule: port `[:, None]` as `expandedDimensions(axis:)`, never as a `.newAxis` subscript.** Keep
+`.newAxis` subscripts only where the list demonstrably covers every axis (usually 1-D operands).
+When unsure, probe it — a 5-line `swift run` that prints two shapes costs seconds; this cost an
+hour at the S0 gate and would have been silent numerical damage if the shapes had happened to
+broadcast.
+
 ## Phase-gated workflow (the S0–S7 pattern)
 
 One phase = one parity gate = one commit. Each phase independently shippable; the PORTING-SPEC.md
@@ -45,6 +69,22 @@ S7  engine wrap         → porting-conformance.md / integration-lessons.md
 Fixture generation is a `tools/dump_*.py` script run with the ORACLE'S venv, dumping `.npy`
 (bf16 saved as fp32; ids as int32) into the test resources. Promote the minimal `.npy` reader
 into the main target so CLI gates share it.
+
+> 🚨 **Write the PASSED stamp AFTER the run, never while scaffolding the table — and the same for
+> every "measured" number.** Scaffolding a spec invites filling in plausible results (the phases
+> are known, the thresholds are known, the numbers "will be" fine). Two instances in one port
+> (Audio8-TTS, 2026-07-30): a phase table stamped `PASSED 2026-07-30 (…102/102 frames…)` before a
+> single gate had run — with invented per-gate figures — and manifest footprint constants
+> commented `MEASURED via --validate` when they were arithmetic on weight bytes. Both were caught
+> and corrected by the author, but nothing in the process would have caught either: the numbers
+> were *individually plausible*, the tests built on them passed (a footprint assertion happily
+> validates a guess), and a reviewer reads a spec as a record, not a forecast.
+>
+> The spec and the manifest are **documents of record** — their entire value is that an entry
+> means someone ran the thing. Concretely: seed new rows as `pending` / constants as
+> `PROVISIONAL — not yet measured`, and when a number is missing, **go build the measurement**
+> (that is where the `--validate` harness came from) rather than softening the wording. If you
+> catch yourself typing a result you have not read out of a tool result, that is the signal.
 
 ## The gate matrix must span the input envelope — largest production grid + decoded output per tier
 

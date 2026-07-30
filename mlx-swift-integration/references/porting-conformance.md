@@ -278,6 +278,26 @@ Three requirements:
    per-app harnesses (LTX's `LTX_CANCEL_TEST`/`LTX_CANCEL_AFTER`/`LTX_CANCEL_RERUN` levers) —
    don't build new ones.
 
+> ⚠ **A green CAN-1..3 proves the ENTRY checkpoint and NOTHING ELSE.** The offline harness
+> cancels *before* `run()` begins, so a package whose mid-run cadence is entirely missing — no
+> per-frame check, no per-step check, the rollout running happily to completion after a cancel —
+> still passes CAN-1 and CAN-2. CAN-3 only checks that you *declared* a cadence; the declaration
+> is unverified prose. So the gate's own documentation of record can be a claim nobody tested.
+>
+> **Don't wait for the app harness to find that out — a live mid-run probe is a CLI gate mode**
+> (`swift run … --cancel`), and the CLI lane does real GPU inference (see swift-port-parity.md,
+> "Where gates can actually run"). Shape: start a deliberately long run, `Task.cancel()` after a
+> second or two, assert on **both** axes —
+>
+> - **type**: the surfaced error is `CancellationError`, *unwrapped* (laundering into a package
+>   error is the CAN-2 failure the offline gate does catch, but only at the entry seam);
+> - **latency**: time-to-throw ≈ one unit of the declared cadence, not the full run. Audio8-TTS
+>   cancelled at t=1.500 s and threw at **1.53 s** — ~30 ms ≈ one frame, against >20 s
+>   uncancelled. That 30 ms is the evidence; without it "cadence: generate/frame" is a guess.
+>
+> The app-harness `[CAN]` bench (item 3) is still the richer instrument — phase attribution,
+> re-run recovery. This is the cheap thing that stops a broken cadence shipping to it.
+
 ## 5b. Inference mode (engine ≥ 0.36.0 / contract 1.27.0 — the C14 INF gate)
 
 **`MLXNN.Module.training` defaults to `true`.** In that state `BatchNorm.callAsFunction`

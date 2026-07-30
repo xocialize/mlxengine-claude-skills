@@ -1024,3 +1024,60 @@ Rules:
   `str.replace` whose anchor a formatter has since reflowed no-ops silently — verify with grep or
   a failing-test rerun after every scripted edit, and never print "patched" unconditionally.
   Same family: `cmd | tail` reports tail's exit status, not cmd's.
+
+## 48. A QUANTIZED checkpoint's shapes are PACKED, not logical — never infer an architecture from one, and always diff against an upstream original with a known-key control arm (the SeedVR2 r7B lesson)
+
+**Measured 2026-07-29.** Pitfall #12/#13's reflex — *diff the weight-key set against an already-ported base before scoping* — is right, and this is the trap inside it: **what you diff against matters as much as that you diff.**
+
+Scoping a 6-block distill of SeedVR2-7B, the diff ran against the shipping `SeedVR2-3B-mlx-int8` (the convenient local file) and produced three architectural deltas. Two were real. The third said *"the candidate takes a 256-dim time embedding, the 3B takes 64."* The 3B's real value is **256**:
+
+```
+int8 file:  emb_in.proj_in.weight [2560, 64] + scales [2560, 4]
+            MLX 8-bit packs 32/8 = 4 values per uint32  ->  64 x 4 = 256 logical
+            scales confirm it: 256 / 4 groups = group size 64
+upstream:   655360 / 2560 = 256   (3B)      786432 / 3072 = 256   (7B)
+```
+
+🔑 **The failure mode is that the packed number is always plausible.** A quantized last dim is the logical one divided by 4 (8-bit) or 8 (4-bit) — never a red flag, always a believable width for a time embedding, a head dim, an MLP ratio. Nothing errors and no test fails; you just write a config field that doesn't exist.
+
+**The rules:**
+1. **Diff against an upstream ORIGINAL**, not a quantized or otherwise re-derived conversion. If only a quantized file is to hand, divide by the packing factor before reading anything as a dimension, and confirm with the `scales`/`biases` sidecars (their last dim is `logical / group_size`).
+2. **Carry a CONTROL ARM: run the same extraction on a checkpoint whose key set you ALREADY know.** This is what caught it — the same probe was run on ByteDance's own 3B, whose keys are known from our conversion. The 7B verdict was only trustworthy because the 3B arm reproduced. A parser asserting an architecture with no control is an unvalidated parser. (Same principle as #46's control arm and #44's self-control.)
+3. **A third party's derivative is not the reference.** The first version of this finding inferred the *teacher's* architecture from a distill of it — the distiller could have made the changes. State that limit and close it against the original. (Here it closed the other way: the distill was faithful and *our* config was wrong.)
+
+### Reading remote checkpoint keys without downloading — three formats, all range requests
+
+Scoping a port should never cost a 33 GB download. Every metadata read below is a partial HTTP fetch:
+
+| Format | Method | Cost |
+|---|---|---|
+| Sharded safetensors | `GET model.safetensors.index.json` | KB |
+| **Single-file safetensors** | first 8 bytes = little-endian `u64` header length, then range-request that many bytes → JSON of `{key: {dtype, shape, offsets}}` | KB |
+| **Torch `.pth`/`.pt`** | it is a **ZIP**: range-request the last 64 KB for the EOCD (`PK\x05\x06`) → central-directory offset/size; **if those fields read `0xFFFFFFFF` it is ZIP64** — find the locator (`PK\x06\x07`) and read the real offsets from the ZIP64 EOCD (`PK\x06\x06`) at bytes 40–56. Fetch the directory, find the entry ending `data.pkl`, read its local header (30 B + name + extra) and pull that member. Walk it with **`pickletools.genops`** — opcodes only, so **nothing is unpickled and nothing from the file executes**. Storage numel trails each key in the opcode stream, which recovers logical shapes. | **130 KB of 32.96 GB (0.00039%)** |
+
+⚠️ Big models are ZIP64 and the naive `zipfile`-style 32-bit read silently yields a garbage offset. ⚠️ Torch nests the archive (`ema/data.pkl` here), so match by suffix, not by exact name.
+
+Working implementation: `mlxengine-todo/probes/v11_seedvr2_7b_arch.py` (with its output archived beside it).
+
+## 49. `mx.argmax` returns **uint32** — cast before it meets a −1 sentinel (the arktts sampling lesson)
+
+Small, mechanical, and it will bite any AR port that pads or masks with `-1`. MLX's `argmax`
+(and `argmin`, `argsort`) yield **unsigned** indices. The moment such a value flows into a
+`where`/`full`/`concatenate` against a negative sentinel, MLX resolves the common dtype as
+`uint32` and throws:
+
+```
+ValueError: Converting -1 to uint32 would result in overflow.
+```
+
+The message names the *sentinel*, not the `argmax` three lines up, so it reads like a bug in the
+padding logic. In the arktts port it fired twice — once in the codec's `encode` (padding invalid
+frames with `-1`) and once in the sampler (`mx.where(emitted, codebooks, -1)`).
+
+- **Fix at the source**, not the sentinel: `mx.argmax(...).astype(mx.int64)` (or int32) at every
+  sampling/index site, so downstream code keeps the signed semantics the PyTorch reference has.
+- **Why not fix the sentinel**: torch's `argmax` returns `int64`, so the reference freely mixes
+  indices and `-1`. Making the sentinel unsigned diverges from the reference and moves the
+  problem to wherever the codes are next compared against `< 0`.
+- Swift-MLX has the same rule (`argMax(...).asType(.int32)`), so the cast transfers to the second
+  implementation rather than needing rediscovery.

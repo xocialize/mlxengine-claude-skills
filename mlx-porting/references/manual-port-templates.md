@@ -115,6 +115,35 @@ mlx_audio/tts/models/<name>/
 
 Mel-RoFormer (`mlx-audio#654`, https://github.com/Blaizzy/mlx-audio/pull/654) is the canonical reference for what "right" looks like here: pure-MLX FFT, weight `sanitize()` remaps the upstream `band_split_module.0.weight` → MLX-friendly keys, parity tested against the PyTorch reference at `≤0.11 dB SDR` on MUSDB18.
 
+**Three mlx-audio-specific contract points a parity-passing model still gets wrong** (arktts /
+Audio8-TTS, 2026-07-30 — each one caught only by running the framework's own loader, per the
+SKILL's "the parity harness is NOT the bar" rule):
+
+- **`post_load_hook` is how you get the model directory.** `base_load_model` constructs
+  `Model(ModelConfig)` and calls `sanitize`, but the config carries no path, so anything needing
+  the checkout — a tokenizer, a voice bank, a sidecar codec — has nothing to open. The house
+  mechanism is an optional classmethod the loader calls last:
+  ```python
+  @classmethod
+  def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":
+      model.model_path = Path(model_path)      # tokenizer loads lazily off this
+      return model
+  ```
+  Without it the model works in your harness (where you set the path by hand) and throws through
+  `mlx_audio.tts.utils.load`. Precedent: `spark.py` builds its tokenizer + audio tokenizer there.
+- **`sanitize()` runs on ALREADY-CONVERTED weights too, so make it idempotent.** The loader calls
+  it unconditionally, including on the repo you published *after* sanitizing. Key remaps and conv
+  transposes then apply twice — a double transpose is shape-plausible and silently wrong. Cheapest
+  guard is a prefix/shape check that returns the dict untouched:
+  ```python
+  if all(k.startswith(("model.", "codec.")) for k in weights):
+      return weights          # already converted
+  ```
+- **Publish PRE-sanitized weights when a Swift consumer is coming.** Folding weight norm and
+  fixing conv layout at conversion time means the Swift loader needs no folding, no transposes,
+  and no key remapping — just a dotted-path → module-tree walk. It moves the fiddliest, most
+  error-prone half of the port out of the second implementation entirely.
+
 ## The mlx-lm CONTRIBUTING checklist (verbatim)
 
 Source: https://github.com/ml-explore/mlx-lm/blob/main/CONTRIBUTING.md.
