@@ -136,11 +136,24 @@ proven default multipliers and collider decomposition are in the springbone refe
 
 **"Imported hair explodes / a rotated head appears / the outfit is backwards."** These are the
 runtime WEAR traps, not authoring bugs: (a) VRM 0.x avatars fail a `VRMC_vrm`-only "is avatar"
-check and wear whole (face+body+hair) → rotated head; detect `VRM` too. (b) 0.x faces −Z → items
-wear 180° backwards; needs an LBS rebake, so 0.x is gated to the Python lane in-app. (c) Hair's
-source spring bones don't exist on a bald base → the puppet explodes it; head-anchor it instead,
-binding against the BASE head rest frame (girl-base's head bind is an axis permutation — binding
-against the source head swirls the hair). Full model + fixes in the wear-runtime reference.
+check and wear whole (face+body+hair) → rotated head; detect `VRM` too. (b) 0.x faces −Z → garments
+would wear **180° backwards** through the puppet. HANDLED (F-ingest, 2026-07-17): the drop front
+door **auto-converts** the 0.x donor to a self-consistent VRM 1.0 (`vrm0to1Full.js`, incl. the 180°
+geometry flip + garment springs migrated), then extraction runs the **generalized clean anchor**
+(R=I) that also handles native 1.0: each humanoid bone gets `IBM'=baseBind⁻¹·T(Δ)` (translation-only
+re-seat onto girl-base, orientation cancelled — head-weighted verts get the base-head anchor for
+free, so accessory verts on the head stay upright; **same-lineage ⇒ Δ=0 ⇒ identity**), carried
+garment/tail/ear spring chains keep their donor IBM with the chain root re-authored under its
+humanoid ancestor (the `extractHairRigged` recipe, P generalized from head → hips/head), and
+non-humanoid non-spring joints redirect to the nearest humanoid ancestor. So converted 0.x drops
+land forward + fitted, ears upright, tail behind, AND garment springs sway. The earlier
+metadata-only F-drop2 path (which dropped springs, R=diag) is superseded; its raw-0.x branch is
+retained `@deprecated`. Remaining gap = cross-avatar **shell fit** (tight boots/stockings shaped for
+the donor interpenetrate girl-base; fix body-side via pre-scale + skin-mask, not placement — F-fit).
+See vrm0-inapp-conversion.md §F-ingest. (c) Hair's source spring bones don't exist on a bald base →
+the puppet explodes it; head-anchor it instead, binding against the BASE head rest frame (girl-base's
+head bind is an axis permutation — binding against the source head swirls the hair). Full model +
+fixes in the wear-runtime reference.
 
 **"Can I drag a random VRoid model in and dress my base in its clothes?"** Only if its build is
 close to the base — the wear path doesn't scale, so a doll (0.96 m) or a tall model distorts. A

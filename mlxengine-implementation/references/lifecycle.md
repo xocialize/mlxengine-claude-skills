@@ -44,6 +44,17 @@ final class AppEngine {
 }
 ```
 
+**⚠️ Own the engine on `@MainActor` — but do NOT drive generation from a `@MainActor` task.**
+Field-proven pitfall (LTX proving ground, 2026-07-02): a run flow living on the view model's
+`@MainActor` works in normal use (inference itself hops to `@InferenceActor`), but during **app
+termination the main-actor executor is starved** — a cancelled main-actor task can never resume to
+finish its teardown, so a graceful quit-drain hangs regardless of cancellation checkpoints, and
+`.terminateLater` deadlocks outright (the modal terminate run-loop starves the main queue too).
+The app was forced into a bounded-drain + `_exit(0)` backstop. Run generation in a detached or
+non-main-actor task (`Task.detached { try await engine.run(...) }`, hop back to `@MainActor` only
+to publish UI state); keep a bounded-drain + `_exit` backstop in `applicationShouldTerminate`
+anyway — it's the right insurance for any phase that can't unwind in time.
+
 The engine's `init` is synchronous and `nonisolated`, so it's fine as a stored property. Its
 `preparation` monitor is a `nonisolated let` — bind UI to it directly without `await`.
 

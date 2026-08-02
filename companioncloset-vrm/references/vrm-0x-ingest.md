@@ -85,3 +85,30 @@ Same split as materials:
 
 If a migration/ingest tool is on the roadmap, budget for translating both materials **and**
 `secondaryAnimation`→`VRMC_springBone`, not just geometry.
+
+### secondaryAnimation → VRMC_springBone: two non-obvious details (UniVRM-validated)
+
+Verified against vrm-c/UniVRM `Packages/VRM10/Runtime/Migration/` and shipped in
+`VRMDeveloper/src/lib/vrm0to1.js`:
+- **Chain expansion + 7cm tail.** 0.x `boneGroups[].bones` list chain ROOTS; expand each along
+  `children[0]` (2nd+ branches spawn new springs), then **append an explicit 7cm tail joint** at
+  each chain end (`tail = last.translation.normalized × 0.07`, node-only, no params). 0.x runtimes
+  added this tail implicitly; 1.0 needs it explicit or the last real joint won't swing. Field rename:
+  `stiffiness`[sic]→`stiffness`.
+- **Vectors migrate `(-x, y, z)`, not the geometry's `(-x,y,-z)`.** Spring `gravityDir` and collider
+  `offset` take `(-x,y,z)` — the net of the 180° Y rotation `(-x,-z)` and a latent z-sign fix in
+  VRM0's storage convention. `gravityDir=(0,-1,0)` (the VRoid-hair norm) is invariant either way.
+
+### In-app WEAR: garments DO need the flip (corrected)
+
+The full 0.x→1.0 geometry conversion (UniVRM `RotateY180`: `-x,y,-z` across POSITION/NORMAL/morph +
+IBMs; requires identity bone rotations, which VRoid 0.x has) is for STANDARD runtimes. CompanionCloset
+*puppets* an item (copies girl-base's bone locals onto the item's J_Bip bones). A brief earlier claim
+that this bone-swap "absorbs the flip, so no geometry flip is needed" was WRONG — the puppet gives
+girl-base's bones, which don't encode the facing, so the −Z mesh stays −Z (garments wear backwards; a
+body-hug fit metric can't detect this, only an asymmetric marker). The in-app fix bakes the flip into
+each humanoid bone's IBM as `baseBind⁻¹·M`, `M=T(basePos)·R·T(−donorPos)` (girl-base's real bind
+matrices embedded), giving `worn=M·v` — the same translation-only anchor `dressup_compose.py` uses.
+Metadata (materials+springs) is still converted. See wear-runtime.md and
+`vroid-xwear-interop/docs/vrm0-inapp-conversion.md` (full correction trail + cross-avatar shell-fit
+limitation).

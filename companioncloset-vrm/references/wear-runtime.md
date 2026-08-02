@@ -11,7 +11,7 @@ the same (the #1 source of "hair exploded / outfit backwards" bugs):
 
 | Tier | Rigging | Extractor | Notes |
 |---|---|---|---|
-| **Garment** | multi-bone body skin, driven by the base rig | `extractItems.js` | tops/dresses/skirts/bottoms/shoes |
+| **Garment** | multi-bone body skin, generalized clean anchor + carried spring chains | `extractItems.js` | tops/dresses/skirts/bottoms/shoes; humanoid verts translation-anchored onto girl-base, garment spring chains (hem/tail/ears) kept + re-authored under their humanoid ancestor (F-ingest) |
 | **Hair** | donor hair spring bones, rest-corrected into base-head frame (rigid 1.0 fallback) | `hairAnchor.js` | source hair springs sit on the HEAD — the one bone whose base rest differs (permutation) → naïve wear explodes; corrected + re-baselined |
 | **Accessory** | rigid 1.0 bind to ONE named anchor bone | `axf/anchor_item.py` | hats/brooches/ties; complex assemblies compose externally |
 
@@ -32,6 +32,11 @@ Drop any wearable-bearing file → extract → closet (IndexedDB) → auto-wear:
 - `.vrmxw` / `.glb` standalone wearable → the whole file is one item.
 - `.vrmxa` / `.vrm` (VRM 1.0) outfitted avatar → `detectItems` → garments (puppet) + hair
   (head-anchor); a BARE avatar (no items) loads as the model instead.
+- **VRM 0.x** → **auto-converted to 1.0 in-page at the front door** (F-ingest, `vrm0to1Full.js`),
+  then treated exactly like a native 1.0 avatar (converted `{json,bin}` feeds the compat gate,
+  `detectItems`, and extraction). This brings the donor's garment/accessory SPRING PHYSICS and
+  puts 0.x on the same wear path as 1.0. The migration report (mtoon/spring/humanoid/expression
+  counts + lossy/warnings) surfaces in the drop toast and rides `sourceMeta.conversion` provenance.
 - `.xwear` → VRoid zip; unpacking not wired (needs deobfuscator lane).
 
 ## Compatibility gate (`compatibility.js`)
@@ -46,6 +51,33 @@ differently distorts. Gate BEFORE extracting on the humanoid skeleton:
 Diagnose with the **donor-reference method**: load the donor VRM on its own and capture
 front/side/back (three-vrm renders it correctly, incl. rotateVRM0) as ground truth, THEN
 compare the applied result. Never judge an applied item with no reference.
+
+## ⚠️ Anchoring is WEAR-time now (F-wear, 2026-07-18) — read before the sections below
+
+Sections below that describe anchoring at EXTRACTION against `GIRL_BASE_BIND` / `BASE_HEAD_WORLD`
+describe the OLD shape. The math is unchanged; **where it runs** changed:
+
+- **Extraction is a pure donor-space subset** — donor IBMs, donor node locals, donor spring chains,
+  plus `asset.extras.rig = {version, anchor, humanBones}` (bone name → node index). No base
+  knowledge. `girlBaseBind.js` and `BASE_HEAD_WORLD` are **deleted**; `isConformantBase` is **deleted**.
+- **`src/lib/wearAnchor.js` fits the item at wear time** against `deriveBaseBind(vrm)` — the loaded
+  avatar's humanoid bind, read from three.js `Skeleton.boneInverses` (the glTF IBMs) and inverted.
+  Every rule below with `baseBind` substituted for `GIRL_BASE_BIND` still holds. Hair is no longer a
+  special case: its head anchor IS the humanoid rule applied to `head`, its chain re-author IS the
+  spring rule with P = head.
+- **Legacy items** (no `extras.rig`) are pre-baked to girl-base and worn untouched. Both tiers coexist.
+- **The puppet pairs HUMANOID-FIRST, then by name.** Name-only pairing couples the whole path to one
+  rig-naming convention — seed-base (`head_1`, `footL`) shares zero names with a VRoid donor
+  (`J_Bip_C_Head`) and failed with "shares no bones with this model". `extras.rig` + the base's
+  humanoid gives a semantic pairing.
+- **A bone the base LACKS** (seed-base has no `upperChest`/`leftEye`/`rightEye`) rides the nearest
+  humanoid ancestor the base does have. Stranding it on the donor IBM tears the mesh (floating sleeves).
+- **Same-lineage stays a numeric no-op:** `max|IBM'−IBM| = 5.96e-8` on girl-base's own garments.
+- **Open residual:** the puppet still copies LOCAL TRS and does NOT retarget, so spring chains on
+  limb bones sit offset on a foreign-rest rig (~18 cm high sleeves on seed-base). Fix = drive by
+  WORLD matrix. Cross-avatar shell fit remains inherent.
+
+See `vroid-xwear-interop/docs/vrm0-inapp-conversion.md §F-wear` and `base/WEARABLE-SPEC.md §extras.rig`.
 
 ## Hair head-anchor (`hairAnchor.js`) — the traps that make it work
 
@@ -102,9 +134,37 @@ flare/lift under Cross Jumps; no explosion; `hair.glb` unregressed. See
 
 - **VRM 0.x detection**: `isAvatar` must check BOTH `VRMC_vrm` (1.0) AND `VRM` (0.x). Missing 0.x
   makes a whole avatar (face+body+hair) wear as one "standalone wearable" → a rotated head.
-- **VRM 0.x orientation**: 0.x faces −Z vs +Z bases, different rest pose → items wear 180°
-  backwards. The puppet can't fix it; the correct fix is an LBS rebake into the base bind pose
-  (`axf/dressup_compose.py`, R=diag(−1,1,−1)). In-app 0.x is GATED to the Python lane.
+- **VRM 0.x orientation + springs** — HANDLED (F-ingest, 2026-07-17): the drop front door
+  **auto-converts** the 0.x donor to a self-consistent VRM 1.0 (`vrm0to1Full.js`, incl. the 180°
+  geometry flip), so by the time extraction runs the facing is already +Z and the donor's garment
+  springs exist as `VRMC_springBone`. Extraction then runs the **generalized clean anchor** (below)
+  with R=I — no per-branch 0.x special-case, no dropped springs. (Superseded the earlier F-drop2
+  metadata-only path, which flipped nothing and dropped 0.x garment springs; that path's raw-0.x
+  anchor branch in `extractItems.js` is retained but `@deprecated`/unreachable.)
+- **Generalized clean anchor (garments/accessories, all avatar sources)** — port of
+  `extractHairRigged` to `extractItems.js`, R=I. Per skin joint:
+  - **humanoid bone w/ a girl-base counterpart** → `IBM' = baseBind[bone]⁻¹·T(Δ)`,
+    `Δ = basePos − donorBindPos` (donorBindPos = `pos(inv(donor IBM))`). At wear `worn = T(Δ)·v`:
+    donor verts translated onto girl-base's bone position, girl-base's non-normalized orientation
+    cancelled — head-weighted verts get the **base-head anchor for free** (girlBaseBind embeds the
+    axis-permuted head → accessory verts on the head land upright). **Same-lineage ⇒ Δ=0 ⇒ IBM'==IBM**
+    (numerically 7.8e-7 on girl-base's own rig): the no-regression property.
+  - **spring-chain joint** (member of a carried spring's joint set) → KEEP donor IBM; re-author the
+    chain ROOT's local under its humanoid ancestor P to `baseBind_P⁻¹·T(Δ_P)·bindWorld_root` so the
+    whole chain lands at `T(Δ_P)·bindWorld` (descendants keep donor locals). Springs + colliders
+    carried; `wearItem` re-baselines them (`setInitState()` after first puppet) and excludes spring
+    bones from puppet pairing — both already generic. **This is the hair recipe with P generalized
+    from head to the chain root's humanoid ancestor** (hips for a skirt/tail, head for cat ears).
+  - **non-humanoid, non-spring joint** → redirect to nearest humanoid ancestor (rigid, rides that
+    bone's anchor).
+  R=I also absorbs native-1.0 cross-avatar rest deltas (foreign 1.0 donor 9128 re-seats
+  translation-only, IBM delta ~1.5, forward/fitted preserved). See docs/vrm0-inapp-conversion.md
+  §F-ingest.
+- **VRM 0.x hair orientation**: hair spring bones are head-anchored / spring-driven, NOT puppet-swapped,
+  so hair does NOT get the free flip and frames the BACK of the head for 0.x. Fix (`hairAnchor.js`):
+  the head-placement map generalizes translate-only `T(Δ)` → `M = T(basePos)·R·T(−srcPos)` — R=I for
+  1.0 (reduces to `T(Δ)`, no-op) and R=diag(−1,1,−1) for 0.x, baked into the head IBM + chain-root
+  locals (positions stay in donor space; three-vrm skins the normals by R). See docs/vrm0-inapp-conversion.md.
 - **Head axis permutation** (above) — girl-base's head rest is not identity.
 - **Puppet name-collision on spring bones**: the puppet pairs item↔base bones by NAME, and girl-base
   carries its own `J_Sec_Hair*` chains — so an imported hair item's same-named chains get puppet-driven

@@ -109,3 +109,14 @@ What the app integrator does about it:
 `mlx-engine-swift/Sources/MLXServeCore/MLXServeEngine.swift` (`PackageID`, `register`, `packages(for:)`,
 `defaultPackage(for:)`, `setDefault`, `resolve`, `run`/`prepare`/`evict` `package:` params,
 `manifest(for:)`).
+
+## Field catch (2026-07-09, ModelSheet Studio): capability overlap rots default routing
+
+Packages GAIN surfaces across versions — z-image-swift v0.2.0 added an `imageEdit` (img2img)
+surface, so an app that registered Z-Image after klein silently swapped its edit backer and
+`prepare(.imageEdit)` tried to load the wrong snapshot (`unreadableSnapshot`). Registration-order
+tricks ("register X last so it defaults") are load-bearing on the *current* pin's surface list and
+break when a pin moves. In any app registering ≥2 image packages: capture the `PackageID` from
+every `register(...)` and pass it explicitly to `run`/`prepare`/`needsDownload`/`ModelStateView`
+(`package:` takes the ID's `rawValue` string in the UI views). Reserve capability-default routing
+for single-backer capabilities.

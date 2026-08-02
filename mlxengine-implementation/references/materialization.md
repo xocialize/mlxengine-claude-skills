@@ -1,8 +1,9 @@
 # First-run weight materialization (auto-materialize, engine ≥ 0.19.0)
 
 The app's side of "the user picked a models folder and pressed Generate on a fresh machine."
-Engine v0.19.0 made first-run downloads a **package responsibility with an engine-level contract**
-— the app never hand-downloads weights, never knows repo ids, and never threads directories.
+Engine v0.19.0 made first-run downloads declaration-driven, and **contract 1.24 moved execution
+into the engine itself** — the app never hand-downloads weights, never knows repo ids, and never
+threads directories; the package only declares.
 
 ## The contract (who does what)
 
@@ -10,7 +11,8 @@ Engine v0.19.0 made first-run downloads a **package responsibility with an engin
 |---|---|---|
 | `ModelStorable` | engine stamps it | WHERE weights live: the store root the app chose |
 | `WeightSourcing` (v0.19.0) | package config declares | WHAT would be fetched: `WeightSource{role, repo, revision, globs}` + `missingWeightSources(storeRoot:)` |
-| `load()` | package executes | downloads missing sources into the store layout (`<root>/<org>/<name>/…`), forwarding progress via `WeightDownloadProgress` |
+| materialization (contract 1.24) | **engine executes** | `prepare()`/`resident()` downloads the missing sources into the store BEFORE `load()` (flat layout `models--<org>--<name>/…`), progress surfacing through `PreparationMonitor`; `SelfMaterializing` configs are the opt-out (their `load()` still downloads itself, forwarding `WeightDownloadProgress`) |
+| `load()` | package executes | just loads from the store-resolved configuration (pre-1.24 packages that still self-download stay correct — their missing-check finds nothing left) |
 | folder pick, progress UI, routing | **the app (you)** | everything below |
 
 ## The golden first-run flow
@@ -39,9 +41,10 @@ Notes on the phases:
 - **Multi-source packages are normal** (LTX materializes three: components + text-encoder +
   quantized transformer). The fraction is monotonic across the whole materialization — source
   *i* of *n* spans `[i/n, (i+1)/n)` — so one progress bar is correct; don't build per-repo bars.
-- `needsDownload` is a heuristic (prewarm paths exist → no; else marker-absent → yes). Bundled
-  packages read `true` pre-marker but skip `.downloading`; treat it as "route to download UI,"
-  not as a byte estimate.
+- `needsDownload`: bundled-only packages (`BundledWeightSourcing`, engine ≥ 0.24.0 — e.g.
+  Real-ESRGAN's vendored checkpoints) read `false` as soon as their bundle resolves; they can
+  never need the network. Everything else is a heuristic (prewarm paths exist → no; else
+  marker-absent → yes) — treat it as "route to download UI," not as a byte estimate.
 - Quant-aware downloads: a conforming package's declaration EXCLUDES files that quant doesn't
   need (LTX's int8/int4 configs skip the 35 GB bf16 transformer). If a first run pulls
   obviously-too-much, that's a package declaration bug — file it, don't work around it.
@@ -86,7 +89,8 @@ Before an app trusts a package's fresh-machine behavior:
   layout). Don't chase "prewarm did nothing" on run one.
 
 Cross-refs: [model-store.md](model-store.md) (the folder-grant trick), [progress-and-errors.md](progress-and-errors.md)
-(phase → UI mapping). Package-author side (WeightSourcing declaration, load() materialization,
-prewarm resolution, the MAT gate as a per-port requirement): `mlx-swift-integration` skill,
-`references/porting-conformance.md` §4. First conforming package + reference implementation:
-`MLXLTX2` (`LTX2Configuration` WeightSourcing + `WeightMaterializer`, ltx-2-mlx-swift `7ae7aed`).
+(phase → UI mapping). Package-author side (WeightSourcing declaration, the SelfMaterializing
+opt-out, prewarm resolution, the MAT gate as a per-port requirement): `mlx-swift-integration`
+skill, `references/porting-conformance.md` §4. Declaration reference: `MLXLTX2`
+(`LTX2Configuration` WeightSourcing, ltx-2-mlx-swift `7ae7aed`); the EXECUTOR is engine-owned
+since contract 1.24 (`MLXServeCore/WeightMaterializer.swift` — per-package copies are retired).

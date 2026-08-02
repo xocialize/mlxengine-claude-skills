@@ -146,3 +146,25 @@ This describes a moving target. Ground-truth files:
 `Sources/MLXServeCore/MLXServeEngine.swift` (`useModelStore`, the register-time stamp + marker write),
 `Sources/MLXToolKit/Preparation.swift` (`PreparationMonitor`, `PreparePhase`),
 `Sources/MLXEngineUI/{ModelStorageSettingsView,EngineSettingsView,ModelStateView}.swift`.
+
+## Store layout is `models--<org>--<name>/` since contract 1.22 — migrate hand-staged stores by RENAME
+
+`ModelStore.directory(for:)` resolves `<root>/models--<org>--<name>/` (hub-style flat naming).
+The pre-1.22 `<root>/<org>/<name>/` layout survives only as a **marker-read tolerance**
+(`legacyDirectory(for:)`, slated for removal) — weights staged in the old layout are
+INVISIBLE to resolution, so an app that upgrades its engine pin over a hand-staged store
+silently re-downloads everything. Caught live in the Mage Demo (24 GB store): the fix is a
+plain directory rename per repo (`microsoft/Mage-Flow-Turbo` →
+`models--microsoft--Mage-Flow-Turbo`), verified by a run with no download phase. Never
+hard-code either convention in fixtures or scripts — derive paths from
+`ModelStore.directory(for:)` / `repoFolderName(for:)` (four repos had fixtures asserting
+the old literal; all failed silently until an engine pin bump).
+
+## Staging weights into a SANDBOXED app's store: hardlinks yes, symlinks no
+
+To pre-seed a store from weights elsewhere on disk (dev/demo flows), **symlinks do not
+work**: the security-scoped folder grant covers the chosen subtree by PATH, and reading
+through a symlink escapes it — the sandbox denies the target. **Hardlinks work** (the link
+IS the file, under the granted path) but require the same volume; fall back to copies
+otherwise. Same-volume hardlink staging of a 14 GB snapshot is instant and was the pattern
+behind every Mage Demo verification run.

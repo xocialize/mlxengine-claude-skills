@@ -404,6 +404,22 @@ project-specific play-by-play lives in `~/Development/MLXEngine/EngineeringDocs/
   **mirror** (`DerivedData/.../SourcePackages/repositories/<pkg>`) — a freshly-pushed tag isn't there
   yet, so a naive Package.resolved edit silently re-reverts on build; (2) then edit the pin + resolve;
   (3) confirm via the DerivedData `checkouts/<pkg>` `git describe`.
+  **THIRD cache layer — `~/Library/Caches/org.swift.swiftpm/manifests` (measured 2026-08-01).** A
+  freshly-tagged fix kept resolving to the OLD version through: deleting the project
+  `Package.resolved`, deleting `DerivedData/.../SourcePackages/Package.resolved`, purging
+  `SourcePackages/checkouts/<pkg>`, AND purging `SourcePackages/repositories/<pkg>` (verified
+  refetched — `git tag` in the mirror listed the new tags). The stale view lived in the
+  **user-level manifest cache**, which no DerivedData purge touches:
+  `rm -rf ~/Library/Caches/org.swift.swiftpm/manifests` → resolve → correct version, immediately.
+  ⚠️ Raising the consumer's `minimumVersion` to the new tag ALSO appears to fix it — but that only
+  MASKS the stale cache (it forces the floor above the cached version), which is how this gets
+  misdiagnosed as "the resolver picks the lowest version" or "an Xcode bug". It is neither: SPM
+  picks the highest in range correctly once the manifest cache is clear (proven by lowering the
+  floor back to the old value after the purge — still resolved to the new tag).
+  Order to try: (1) purge the manifest cache, (2) fetch tags in the mirror, (3) delete both
+  `Package.resolved`s, (4) resolve, (5) confirm with `git -C .../checkouts/<pkg> describe --tags`.
+  Independently, bumping `minimumVersion` to the fix tag is still good hygiene — a floor left at an
+  old version lets any consumer legitimately keep serving it.
 - [ ] **Publish the Python-MLX weights in CANONICAL module-key layout → Swift load is remap-free**
   (anima-swift, 2026-06-26). If the Python rung exports each component via
   `mx.save_safetensors(dict(tree_flatten(model.parameters())))` (after `mx.eval`), the on-disk keys ARE
@@ -1311,6 +1327,36 @@ SCUNet has three stride-2 stages (⇒ 8) but pads to **64**, because the deepest
 8-px window at 1/8 scale. The forward pass lays the window grid out from the **tile's own origin**,
 so a tile origin off the 64 grid shifts the window phase relative to its neighbour — a seam
 feathering cannot remove. Align tile *and* overlap; step is then aligned automatically.
+
+### Tiling a GENERATIVE model: which per-tile globals matter, measured (SeedVR2, V10-fix 2026-07-30)
+
+A one-step diffusion refiner tiled at 1:1 (SeedVR2-3B, 256/32) has two operations that are *global
+by definition* being applied per tile — and a measured hierarchy of how much each costs. Receipts:
+`mlxengine-todo/probes/v10fix_*.out`.
+
+- **Global-statistics colour transfer per tile is the big, cheap win — and it is a TEMPORAL bug
+  too, not just a spatial one.** `labTransfer` is histMatch (global stats); per tile, every tile
+  lands in its own colour space → visible tile grid + chroma speckle in flats. On video the feared
+  failure INVERTED under A/B: the per-tile match was the *unstable* arm (max frame-pair |Δa*| 1.62
+  vs a Lanczos content floor of 0.269 — a tile's histogram churns as content crosses its border and
+  the whole tile jumps), while a per-frame global match measured BELOW the content floor (0.235).
+  Match once, against the whole pre-upscaled base, after assembly — stills and video both.
+- **The noise field is a closed chain: three constructions, no measurable difference past the
+  first.** Identical-per-tile noise (one seed, per-tile-sized draw) → periodic texture locked to
+  the tile grid: fix that. But per-tile-seed decorrelation vs the *correct* construction (ONE field
+  over the whole image latent, sliced per tile via a region-aware tiler closure) measured as pure
+  noise-realization jitter (seam comb 1885→1875, flat-MAE 4.19→4.20). Ship the correct construction
+  because it is correct and costs ~4 MB — but do not expect quality from it, and do not revisit.
+- **The residual seam error in a generative tiler is per-call variance** — each tile reconstructs
+  plausible-but-different content from different context, and feathering blends the disagreement
+  into mottled overlap bands. No noise or colour construction fixes that; the levers left are
+  extent (the model's resolution envelope) and per-call determinism-with-shared-context. Geometry
+  sweeps trade it against MAE *backwards* (bigger tiles: seam energy ↓, MAE ↑, memory ↑).
+- **Method note that made the above trustworthy:** every arm — including dumps from earlier
+  sessions — was recomputed with ONE metrics script before comparing; and the tiled path's
+  single-pass control rows had to reproduce byte-identically before the tiled row was read at all.
+  A fidelity metric (SSIMULACRA2) rated an obvious smear→legible repair as 4.7 points on this path:
+  dump the PNGs and look, every time.
 
 ## Growing a capability vs adding one (two worked decisions, 2026-07-27)
 

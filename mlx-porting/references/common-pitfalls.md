@@ -1099,3 +1099,162 @@ frames with `-1`) and once in the sampler (`mx.where(emitted, codebooks, -1)`).
   problem to wherever the codes are next compared against `< 0`.
 - Swift-MLX has the same rule (`argMax(...).asType(.int32)`), so the cast transfers to the second
   implementation rather than needing rediscovery.
+
+## 49. YOUR REFERENCE IMPLEMENTATION MAY HAVE A NARROWER SCOPE THAN YOUR TARGET — every shortcut it took for the case it cared about is invisible from your side (the SeedVR2 T=1 lesson)
+
+**Measured 2026-07-30.** A port can inherit the *model* from one upstream and the *implementation* from
+another, and the second one's assumptions travel silently.
+
+`mlx-seedvr2-swift` ports **ByteDance SeedVR2 — a video super-resolution model** — and was undertaken
+specifically to do video. Its shipped `config.json` records both provenances honestly:
+
+```
+"upstream":      "ByteDance-Seed/SeedVR (Apache-2.0)"     <- the MODEL (video)
+"mlx_reference": "filipstrand/mflux"                      <- the IMPLEMENTATION (image-only)
+```
+
+Nearly every source file cites both. The MLX code was traced line-by-line against **mflux, whose
+SeedVR2 support is image-only and therefore only ever runs T=1**. So mflux's causal `remove_head` in
+the decoder's temporal upsample is gated `if T == 1: keep [:1]` — correct for the only case it meets,
+and a silent shortcut everywhere else. ByteDance applies it unconditionally (`T·tf → 2T−1`).
+
+🚨 **The failure mode is the dangerous kind: it does not crash and it does not look wrong.** Driven at
+T=1 the port is exactly correct. Driven at T>1 the decoder emitted **4×latT frames (8/12/16) where the
+causal inverse gives 5/9/13** — but nobody saw it, because the driver *also* only ever asked for T=1.
+Two independent narrowings agreed with each other for a year.
+
+**The rules:**
+1. **Record BOTH provenances and check whether they have the same scope.** "Model = video, reference =
+   image-only" is a red flag you can see before writing any code. Put it in the manifest, as this port
+   did — that record is what made the diagnosis fast once someone finally looked.
+2. **Grep your reference for guards on the dimension you intend to exercise** (`if T == 1`, `if B == 1`,
+   `assert seq_len == 1`, `frames=1` defaults). Each one is a place its author declined to generalise.
+   They are shortcuts, not bugs — in *their* scope.
+3. **Test the dimension your target needs even when your driver does not use it yet.** A shape-only
+   round-trip assertion (`T frames in → T frames out`, for T ∈ {1,5,9,13}) is weightless, CI-safe, and
+   would have caught this the day the port landed.
+4. **When you generalise an inherited shortcut, keep the original expression verbatim on the original
+   branch.** `T == 1 ? <old expression> : <general form>` makes the shipping path bit-identical **by
+   construction** rather than by hoping the general form reduces. Verified at max|Δ| = 0.0 here, and it
+   is the difference between a safe refactor and a leap of faith.
+5. **Convict against the model's own upstream, not against your port.** The bug was invisible from
+   inside our code — it looked like a deliberate special case — and obvious the moment ByteDance's
+   `causal_inflation_lib` was read beside it.
+
+⚠️ Corollary: this is also why "the port works" is a claim scoped to what the driver exercised. The
+package had passing tests, golden parity against mflux, and a shipping video path — all true, and all
+inside T=1.
+
+---
+
+## 50. Measuring a PERIODIC artefact (tile seams, block edges, patch grids) needs a NULL DISTRIBUTION — a single off-grid control is noise, and the obvious masks and statistics each fail in their own way (the Real-ESRGAN t64→t128 lesson)
+
+**The setup.** Two tilings of the same image, and one question: does the coarser grid seam worse? The
+honest metric is "mean |horizontal gradient| at boundary columns vs everywhere else, restricted to flat
+regions" — a discontinuity is only visible where the image is otherwise smooth. Simple. Three separate
+ways of computing it produced three different answers, two of them wrong, before the real one.
+
+**(a) The flat mask silently selected NOTHING.** `flat = local_std < percentile(local_std, 40)` reads as
+obviously correct and is a no-op on real content: ≥40% of 16² blocks in a graphic have **exactly zero**
+variance, so the 40th percentile IS zero and `< 0` is empty. Every downstream statistic came back `nan`
+— which at least announced itself. 🔑 **On saturated distributions use `<=`, and assert the mask is
+non-empty before trusting anything computed from it.** A mask that selects 0 rows and a mask that
+selects the wrong rows are the same class of bug; only one of them is loud.
+
+**(b) Max-over-phase is NOT comparable across periods, and it inverted the verdict.** Not knowing the
+boundary phase, taking `max over phase ∈ [0, p)` of the excess looks like the robust move. It is not:
+period 480 gets 480 chances to find a high-scoring phase and period 224 gets 224, so the larger period
+scores higher **from sample count alone**. This ranked the seaming arm as clean and the clean arm as
+seaming — a fully inverted conclusion, from a statistic that looked conservative. 🔑 **Compute the phase
+from the geometry (tile boundaries are at known offsets) and fix it. If you must search phase, the null
+has to be searched identically.**
+
+**(c) One off-grid control stride is worthless.** The natural sanity check — "score a stride with no
+boundaries on it, confirm it reads ~1.0×" — gave **1.52×, higher than the true boundary stride's
+1.06×**. Not a bug: at stride 480 across 8191 columns only ~17 columns are sampled, so the control was
+dominated by sampling noise. A single control cannot tell you the scale of the noise it is drawn from.
+
+**What actually discriminates:** score the true stride, then score **~150+ off-grid strides** and
+compare the true one against that distribution, using a **z-score** (difference of means over the
+pooled standard error) rather than a raw ratio so the differing column counts are handled. The answer
+came out unambiguous and stable — true stride at z +1.50 vs a null 95th percentile of +0.84 for the
+seaming arm, +0.46 vs +0.80 for the clean one.
+
+**The physical lesson that generalises past measurement.** Overlap in a tiled compositor is **absolute,
+not a ratio**: it exists to cover the network's receptive field, which is a fixed pixel count and does
+**not** grow when the tile does. So 8 px of overlap at tile 128 is exactly the margin 8 px at tile 64
+was, across ~4× fewer seams — enlarging tiles *reduces* total seam artefact while also being faster.
+⚠️ The intuition "overlap ratio dropped from 1:8 to 1:16, so quality must suffer" is wrong and will
+cost you throughput for no margin if you act on it. **Check what the overlap is for before scaling it.**
+
+⚠️ Corollary worth stating: the tile size inherited from upstream's inference script is a value someone
+chose for their hardware, not a property of the architecture. Here it was the **slowest of three sizes
+on both candidate backends** and the only one with a measurable seam. Time it before adopting it.
+
+---
+
+## 51. A RATIO OF TWO SEPARATELY-MEASURED QUANTITIES IS NOT A MEASUREMENT — estimate the composite by running the composite (the SeedVR2 bank-offload lesson)
+
+**Three cost estimates for one feature, two of them published, all three different, and the first two
+wrong in opposite directions.** The feature: spilling per-tile streaming state to disk to fit a memory
+budget. The question: what does it cost in wall clock?
+
+| | estimate | how it was derived |
+|---|---|---|
+| 1 | **2.7× slowdown** — "cannot work" | I/O at 170 tile positions ÷ compute measured at **9** |
+| 2 | **~6–13%** | bank bytes ÷ **raw disk bandwidth** from a `dd`-style probe |
+| 3 | **+48%** | ran both arms end to end, bracketed |
+
+Estimate 1 nearly killed a viable feature and caused a large restructure to be scoped in its place.
+Estimate 2 revived it and got shipped into three files' documentation. Both were arithmetic over real,
+correctly-measured numbers. **Both were wrong because the numbers came from different conditions.**
+
+- #1 divided a quantity that scales with N by a quantity measured at a *fixed, different* N. The
+  giveaway: the answer changed by 25× when the same arithmetic was done consistently.
+- #2 used *raw sequential bandwidth* for a workload that is 57 small tensors per record through a
+  serialization format. The real throughput was **~7× below raw** — the round trip is
+  **serialization-bound, not bandwidth-bound**, which no bandwidth probe could have revealed.
+
+🔑 **The rule.** When you need the cost of A-composed-with-B, measure A-composed-with-B. A microbenchmark
+of B tells you about B *in the microbenchmark's regime*, and composition routinely lands in a different
+one — different access sizes, different allocation patterns, different serialization, different cache
+behaviour. This is the sibling of *state the measurement configuration, not just the units*: **name the
+configuration each factor was measured in, and if they differ, you have an estimate, not a measurement.**
+
+⚠️ **Corollary — a wrong cost estimate does not just mis-price work, it re-plans it.** Estimate 1 caused
+a loop-order restructure to be designed, scoped, written up, and recorded as the fix. The measurement
+showed the restructure was never needed *and* pointed at a better lever (a contiguous record format,
+targeting the 7× serialization gap). **Cheap composite measurements bought early are worth more than
+careful component measurements, because they change what you build, not just what you claim.**
+
+✅ **What the composite run also bought, which no estimate would have:** that eviction is *bit-identical*
+end to end (max |Δ| = 0 over every emitted frame across two real round-trip boundaries), and that a
+sizing model fitted at 1 and 9 units extrapolated to 40 within 4.5%. Correctness and extrapolation
+validity are not things a cost estimate can even express — one run answered three questions.
+
+---
+
+## 52. RUN A CPU-LANE CONTROL IN EVERY PARITY GATE — Metal kernels can be wrong in narrow shape windows, and the window is invisible from inside it (the BOPBTL conv lesson)
+
+A parity gate failed at 51 dB with clean layer-wise inputs. Stage bisect: exact… exact… then one
+conv jumped 4 orders of magnitude — same code path as an exact sibling conv one line earlier. The
+discriminating experiment was ONE flag: rerun on the CPU stream. **CPU: 119.8 dB, exact. The Metal
+fp32 `conv2d` kernel was wrong**, in a precise window mapped by an isolated random-data sweep:
+**inC ≥ 128 AND outC ≥ 128 AND spatial ≥ ~64** (in96→128, in128→64, @34: all exact at 1e-5;
+in128→128 @66/@130, in256→256 @66: ~10 bits lost).
+
+This is the SECOND confirmed shape-windowed mlx-swift Metal kernel defect (first: the NAX split-K
+GEMM window, mlx#3797/#3810, K ≥ 10240). The general lessons:
+
+1. **A CPU-vs-GPU A/B is the cheapest bisect step you have and should be a standing arm of every
+   parity gate.** It instantly splits "your port is wrong" from "the kernel is wrong" — the two
+   have identical symptoms and totally different fixes.
+2. **Characterize the window with an isolated random-data sweep before working around it** — vary
+   one dimension at a time. The workaround can then be scoped exactly (a CPU pin, a chunking) and
+   documented with its removal condition.
+3. **Ship the probe with the package** (`<model>-gate --gpu-probe`): the workaround must carry a
+   one-command test that says when it can come out, or it outlives the bug forever.
+4. Layer-wise stage bisects work: dump reference intermediates, compare per stage, then per sub-op.
+   ⚠️ Inplace ops in the reference (`nn.LeakyReLU(…, True)`) alias dump tensors — `.clone()` them.
+5. (Test harness, same session:) under `--build-system swiftbuild`, **swift-testing cannot run MLX**
+   — metallib Bundle lookup resolves against the runner, not the .xctest. MLX tests must be XCTest.

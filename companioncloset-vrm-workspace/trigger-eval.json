@@ -1,0 +1,22 @@
+[
+  {"query": "my vrm avatar's skirt keeps clipping through her thighs when she walks — how do I set up the colliders so it stops", "should_trigger": true},
+  {"query": "why does this outfit turn completely black in the shadowed parts? looks fine in direct light. it's a .vrm i loaded with three-vrm", "should_trigger": true},
+  {"query": "I've got a TRELLIS-generated jacket mesh with no bones. how do I add spring physics so the coat tails sway when the character moves", "should_trigger": true},
+  {"query": "need to convert a pile of VRChat PhysBone components on a dress into VRM spring bones — whats the actual parameter mapping, pull vs stiffness etc", "should_trigger": true},
+  {"query": "Klein just handed me an albedo png for the new Closet dress. what other maps do i need to generate so it renders correctly under mtoon10", "should_trigger": true},
+  {"query": "how are _MainTex and _ShadeTex different in MToon and which color space should each texture be exported in (srgb or linear)", "should_trigger": true},
+  {"query": "walk me through the .xwear read path — loading a garment into VRMDressKit and the mesh comes out mirror-flipped and lit backwards", "should_trigger": true},
+  {"query": "trying to understand VRMC_springBone — whats the difference between joints, colliders, and collider groups when I author a ponytail chain", "should_trigger": true},
+  {"query": "in Companion the hair just hangs there completely stiff with no bounce. where do i set the stiffness and drag values", "should_trigger": true},
+  {"query": "how do I retexture just the tops group of a vroid outfit without touching the body skin material", "should_trigger": true},
+  {"query": "how do I load a standard glTF 2.0 model with PBR metallic-roughness materials in three.js and wire up an orbit camera", "should_trigger": false},
+  {"query": "my Rigidbody in Unity keeps falling through the floor mesh collider at high speed, how do I stop the tunneling", "should_trigger": false},
+  {"query": "best workflow to bake ambient occlusion and normal maps from a high-poly sculpt down to a low-poly game prop in Blender", "should_trigger": false},
+  {"query": "I need to rig a humanoid character in Blender with an armature and weight-paint the mesh to the bones", "should_trigger": false},
+  {"query": "convert this .fbx skeletal animation to a .glb so I can play it back on a webpage", "should_trigger": false},
+  {"query": "how do position-based dynamics / XPBD cloth solvers work for simulating a waving flag in my custom C++ engine", "should_trigger": false},
+  {"query": "set up a toon / cel shader in Unity URP with a lighting ramp texture for my stylized game character", "should_trigger": false},
+  {"query": "what texture resolution and compression format should I use for character skins targeting mobile GPUs", "should_trigger": false},
+  {"query": "help me write a GLSL fragment shader that does rim / fresnel lighting for a sci-fi hologram effect", "should_trigger": false},
+  {"query": "how do I cut draw calls by combining several materials into one texture atlas for my Unity mobile game", "should_trigger": false}
+]

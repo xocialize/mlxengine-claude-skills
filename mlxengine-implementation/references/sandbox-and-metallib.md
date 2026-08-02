@@ -33,6 +33,49 @@ a `weightsRootOverride` + the security-scoped bookmark — the same pattern, not
 **Keep the `ModelStorageModel` alive** for the app's lifetime — the security-scoped access lives on that
 instance; if it deinits, writes under the store root start failing mid-session (topic 1).
 
+## Running a sandboxed product app HEADLESS for measurement (V10-fix, 2026-07-30)
+
+Launching a product app's binary from a script (bench harnesses, envelope sweeps) fails in ways that
+do not reproduce from an interactive shell, because **two independent gates deny reads and neither
+prompts anyone who can answer**:
+
+1. **App Sandbox.** The product ships `com.apple.security.app-sandbox = true`, so the process cannot
+   read `/Volumes/...` or even `/private/tmp` staging dirs regardless of TCC state. The failure is
+   `NSCocoaErrorDomain 257 "Operation not permitted"` on paths your own shell reads fine.
+2. **TCC re-attribution after rebuild.** Every rebuild re-signs the DerivedData app ad-hoc, which
+   invalidates any removable-volume/folder grants the app identity had earned. Headless, the consent
+   prompt either never fires or fires on a screen nobody is watching. The signature is *progressive
+   flakiness*: one run reads weights then loses the corpus, the next run reads nothing.
+
+**The fix is a build-time override, not staging copies:**
+
+```bash
+xcodebuild -project App.xcodeproj -scheme App -configuration Release \
+  -derivedDataPath "$SCRATCH/dd" ENABLE_APP_SANDBOX=NO build
+```
+
+- `ENABLE_APP_SANDBOX=NO` on the command line — the project keeps shipping `YES`; only the harness
+  build drops it. Verify with `codesign -d --entitlements - <app>` before trusting a run.
+- **Own `-derivedDataPath` per session/agent** — two concurrent sessions sharing the default
+  DerivedData clobber each other's builds and package resolutions.
+- Staging weights into `/private/tmp` to dodge the sandbox is a trap: a partial store copy silently
+  sends the un-staged packages to the network mid-run and fails late. Point at the real store and
+  drop the sandbox instead.
+
+### Freshly pushed tag not picked up by `xcodebuild -resolvePackageDependencies`
+
+Resolution treats existing pins that still *satisfy* the requirement as final — it updates nothing.
+Deleting the workspace `Package.resolved` is **not enough**: Xcode reconstructs it from
+`DerivedData/<app>/SourcePackages/workspace-state.json`. To force a fresh-latest resolution:
+
+1. `git fetch --tags` inside the cached mirrors (`~/Library/Caches/org.swift.swiftpm/repositories/<pkg>-*`
+   and `<DerivedData>/SourcePackages/repositories/<pkg>-*`) — or delete them;
+2. delete `<DerivedData>/SourcePackages/workspace-state.json` AND the project's `Package.resolved`;
+3. re-run `-resolvePackageDependencies` and grep the output for the expected `pkg @ version`.
+
+A plain-SPM probe package with `exact:` the new version resolves the graph independently — use it to
+distinguish "Xcode cache" from "real dependency conflict" before touching caches.
+
 ## The offline-CLI vs. live-Xcode metallib boundary
 
 The single most confusing thing for someone testing an integration:

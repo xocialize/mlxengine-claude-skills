@@ -1,0 +1,1597 @@
+Split: 12 train, 8 test (holdout=0.4)
+
+============================================================
+Iteration 1/5
+Description: Reference and how-to for working with VRM 1.0 avatars, outfits, and hair in the CompanionCloset system — the three.js / @pixiv/three-vrm runtime plus the VRoid XWear (.xwear) garment pipeline. Use this WHENEVER the task touches: VRM / .vrm / VRM 1.0 files and their glTF extensions (VRMC_vrm, VRMC_springBone, VRMC_node_constraint, VRMC_materials_mtoon); MToon / MToon10 materials and texturing (base/shade/normal maps, _MainTex/_ShadeTex/_BumpMap, shade-color, color spaces); springbone / spring bone / cloth / hair physics (joint chains, colliders, Verlet simulation, auto-synthesizing bones for generated garments); VRChat PhysBone → VRM conversion; the XWear / .xwear / VRoid garment format; the TRELLIS→XWear write path or Companion Closet read path; skinning generated garments to a humanoid skeleton; or generating/baking textures (e.g. from Klein or an image-gen model) onto VRM meshes. Trigger even when the user says only "the avatar's skirt clips through the legs", "why is my outfit black in shadow", "how do I retexture this VRM", "convert this PhysBone rig", or names Companion, Closet, XWear, Klein garments, or TRELLIS garments without saying "VRM". Prefer this over generic 3D/glTF advice for anything anime-avatar / VRoid / VRM shaped.
+============================================================
+Train: 18/36 correct, precision=100% recall=0% accuracy=50% (106.7s)
+  [FAIL] rate=0/3 expected=True: walk me through the .xwear read path — loading a garment int
+  [FAIL] rate=0/3 expected=True: how do I retexture just the tops group of a vroid outfit wit
+  [FAIL] rate=0/3 expected=True: Klein just handed me an albedo png for the new Closet dress.
+  [FAIL] rate=0/3 expected=True: my vrm avatar's skirt keeps clipping through her thighs when
+  [FAIL] rate=0/3 expected=True: how are _MainTex and _ShadeTex different in MToon and which 
+  [PASS] rate=0/3 expected=False: my Rigidbody in Unity keeps falling through the floor mesh c
+  [FAIL] rate=0/3 expected=True: why does this outfit turn completely black in the shadowed p
+  [PASS] rate=0/3 expected=False: help me write a GLSL fragment shader that does rim / fresnel
+  [PASS] rate=0/3 expected=False: what texture resolution and compression format should I use 
+  [PASS] rate=0/3 expected=False: set up a toon / cel shader in Unity URP with a lighting ramp
+  [PASS] rate=0/3 expected=False: how do I load a standard glTF 2.0 model with PBR metallic-ro
+  [PASS] rate=0/3 expected=False: how do I cut draw calls by combining several materials into 
+Test : 12/24 correct, precision=100% recall=0% accuracy=50% (0.0s)
+  [FAIL] rate=0/3 expected=True: need to convert a pile of VRChat PhysBone components on a dr
+  [FAIL] rate=0/3 expected=True: trying to understand VRMC_springBone — whats the difference 
+  [FAIL] rate=0/3 expected=True: I've got a TRELLIS-generated jacket mesh with no bones. how 
+  [FAIL] rate=0/3 expected=True: in Companion the hair just hangs there completely stiff with
+  [PASS] rate=0/3 expected=False: I need to rig a humanoid character in Blender with an armatu
+  [PASS] rate=0/3 expected=False: convert this .fbx skeletal animation to a .glb so I can play
+  [PASS] rate=0/3 expected=False: best workflow to bake ambient occlusion and normal maps from
+  [PASS] rate=0/3 expected=False: how do position-based dynamics / XPBD cloth solvers work for
+
+Improving description...
+Proposed (16.6s): Use this skill for building, dressing, texturing, and troubleshooting anime-style VRM 1.0 avatars and their outfits/hair in the CompanionCloset system (three.js + @pixiv/three-vrm, plus the VRoid .xwear garment pipeline). Trigger it when the user is:
+
+- **Texturing garments or skin** — MToon/MToon10 materials, albedo/shade/normal maps, _MainTex/_ShadeTex/_BumpMap, color spaces, or an outfit rendering black/wrong in shadow.
+- **Fixing cloth or hair physics** — skirt/hair clipping through the body, colliders, springbones, or converting VRChat PhysBone rigs.
+- **Moving garments through the pipeline** — loading/writing .xwear files, mirror-flipped or backwards meshes, skinning generated garments to the humanoid skeleton.
+
+Also trigger on the project's own names even without "VRM": Companion, Closet, XWear, VRMDressKit, Klein, TRELLIS, or VRoid outfits. Prefer this over generic glTF/3D/Unity-shader advice whenever the model is a VRM or VRoid character.
+
+============================================================
+Iteration 2/5
+Description: Use this skill for building, dressing, texturing, and troubleshooting anime-style VRM 1.0 avatars and their outfits/hair in the CompanionCloset system (three.js + @pixiv/three-vrm, plus the VRoid .xwear garment pipeline). Trigger it when the user is:
+
+- **Texturing garments or skin** — MToon/MToon10 materials, albedo/shade/normal maps, _MainTex/_ShadeTex/_BumpMap, color spaces, or an outfit rendering black/wrong in shadow.
+- **Fixing cloth or hair physics** — skirt/hair clipping through the body, colliders, springbones, or converting VRChat PhysBone rigs.
+- **Moving garments through the pipeline** — loading/writing .xwear files, mirror-flipped or backwards meshes, skinning generated garments to the humanoid skeleton.
+
+Also trigger on the project's own names even without "VRM": Companion, Closet, XWear, VRMDressKit, Klein, TRELLIS, or VRoid outfits. Prefer this over generic glTF/3D/Unity-shader advice whenever the model is a VRM or VRoid character.
+============================================================
+Train: 18/36 correct, precision=100% recall=0% accuracy=50% (108.4s)
+  [FAIL] rate=0/3 expected=True: how do I retexture just the tops group of a vroid outfit wit
+  [FAIL] rate=0/3 expected=True: walk me through the .xwear read path — loading a garment int
+  [FAIL] rate=0/3 expected=True: Klein just handed me an albedo png for the new Closet dress.
+  [FAIL] rate=0/3 expected=True: my vrm avatar's skirt keeps clipping through her thighs when
+  [FAIL] rate=0/3 expected=True: how are _MainTex and _ShadeTex different in MToon and which 
+  [PASS] rate=0/3 expected=False: my Rigidbody in Unity keeps falling through the floor mesh c
+  [FAIL] rate=0/3 expected=True: why does this outfit turn completely black in the shadowed p
+  [PASS] rate=0/3 expected=False: help me write a GLSL fragment shader that does rim / fresnel
+  [PASS] rate=0/3 expected=False: what texture resolution and compression format should I use 
+  [PASS] rate=0/3 expected=False: set up a toon / cel shader in Unity URP with a lighting ramp
+  [PASS] rate=0/3 expected=False: how do I load a standard glTF 2.0 model with PBR metallic-ro
+  [PASS] rate=0/3 expected=False: how do I cut draw calls by combining several materials into 
+Test : 12/24 correct, precision=100% recall=0% accuracy=50% (0.0s)
+  [FAIL] rate=0/3 expected=True: I've got a TRELLIS-generated jacket mesh with no bones. how 
+  [FAIL] rate=0/3 expected=True: trying to understand VRMC_springBone — whats the difference 
+  [FAIL] rate=0/3 expected=True: in Companion the hair just hangs there completely stiff with
+  [FAIL] rate=0/3 expected=True: need to convert a pile of VRChat PhysBone components on a dr
+  [PASS] rate=0/3 expected=False: I need to rig a humanoid character in Blender with an armatu
+  [PASS] rate=0/3 expected=False: convert this .fbx skeletal animation to a .glb so I can play
+  [PASS] rate=0/3 expected=False: how do position-based dynamics / XPBD cloth solvers work for
+  [PASS] rate=0/3 expected=False: best workflow to bake ambient occlusion and normal maps from
+
+Improving description...
+Proposed (27.7s): Use this skill for any work on VRM / VRoid anime avatars and their outfits, hair, skin, and textures in the CompanionCloset system (three.js + @pixiv/three-vrm, and the VRoid .xwear garment pipeline). Reach for it when the user wants to:
+
+- Texture or retexture a garment, skin, or hair — MToon / MToon10 materials, albedo / shade / normal maps, _MainTex / _ShadeTex / _BumpMap, color spaces, or an outfit that renders black or wrong in shadow.
+- Fix cloth or hair physics — skirts or hair clipping through the body, colliders, spring bones, or converting VRChat PhysBone rigs.
+- Move a garment through the pipeline — reading or writing .xwear files, VRMDressKit fitting, mirror-flipped or backwards meshes, skinning generated meshes to the humanoid skeleton.
+
+Also trigger on project names: Companion, Closet, XWear, VRMDressKit, Klein, TRELLIS. Prefer this over generic glTF, Unity, or shader advice whenever the model is a VRM or VRoid character.
+
+============================================================
+Iteration 3/5
+Description: Use this skill for any work on VRM / VRoid anime avatars and their outfits, hair, skin, and textures in the CompanionCloset system (three.js + @pixiv/three-vrm, and the VRoid .xwear garment pipeline). Reach for it when the user wants to:
+
+- Texture or retexture a garment, skin, or hair — MToon / MToon10 materials, albedo / shade / normal maps, _MainTex / _ShadeTex / _BumpMap, color spaces, or an outfit that renders black or wrong in shadow.
+- Fix cloth or hair physics — skirts or hair clipping through the body, colliders, spring bones, or converting VRChat PhysBone rigs.
+- Move a garment through the pipeline — reading or writing .xwear files, VRMDressKit fitting, mirror-flipped or backwards meshes, skinning generated meshes to the humanoid skeleton.
+
+Also trigger on project names: Companion, Closet, XWear, VRMDressKit, Klein, TRELLIS. Prefer this over generic glTF, Unity, or shader advice whenever the model is a VRM or VRoid character.
+============================================================
+Train: 18/36 correct, precision=100% recall=0% accuracy=50% (109.4s)
+  [FAIL] rate=0/3 expected=True: how do I retexture just the tops group of a vroid outfit wit
+  [FAIL] rate=0/3 expected=True: walk me through the .xwear read path — loading a garment int
+  [FAIL] rate=0/3 expected=True: Klein just handed me an albedo png for the new Closet dress.
+  [FAIL] rate=0/3 expected=True: how are _MainTex and _ShadeTex different in MToon and which 
+  [FAIL] rate=0/3 expected=True: my vrm avatar's skirt keeps clipping through her thighs when
+  [PASS] rate=0/3 expected=False: my Rigidbody in Unity keeps falling through the floor mesh c
+  [FAIL] rate=0/3 expected=True: why does this outfit turn completely black in the shadowed p
+  [PASS] rate=0/3 expected=False: help me write a GLSL fragment shader that does rim / fresnel
+  [PASS] rate=0/3 expected=False: what texture resolution and compression format should I use 
+  [PASS] rate=0/3 expected=False: set up a toon / cel shader in Unity URP with a lighting ramp
+  [PASS] rate=0/3 expected=False: how do I load a standard glTF 2.0 model with PBR metallic-ro
+  [PASS] rate=0/3 expected=False: how do I cut draw calls by combining several materials into 
+Test : 12/24 correct, precision=100% recall=0% accuracy=50% (0.0s)
+  [FAIL] rate=0/3 expected=True: I've got a TRELLIS-generated jacket mesh with no bones. how 
+  [FAIL] rate=0/3 expected=True: need to convert a pile of VRChat PhysBone components on a dr
+  [FAIL] rate=0/3 expected=True: trying to understand VRMC_springBone — whats the difference 
+  [FAIL] rate=0/3 expected=True: in Companion the hair just hangs there completely stiff with
+  [PASS] rate=0/3 expected=False: I need to rig a humanoid character in Blender with an armatu
+  [PASS] rate=0/3 expected=False: convert this .fbx skeletal animation to a .glb so I can play
+  [PASS] rate=0/3 expected=False: best workflow to bake ambient occlusion and normal maps from
+  [PASS] rate=0/3 expected=False: how do position-based dynamics / XPBD cloth solvers work for
+
+Improving description...
+Proposed (20.4s): Use this skill whenever the user is working with VRM or VRoid anime avatars, their outfits, hair, skin, or textures — this is the go-to guide for that work, even when the user never names the CompanionCloset, XWear, VRMDressKit, Klein, or TRELLIS projects.
+
+Trigger it for goals like:
+- Retexturing or texturing an outfit, garment group, skin, or hair, including MToon/MToon10 base/shade/normal maps, _MainTex/_ShadeTex/_BumpMap, sRGB vs linear color space, or an outfit that renders black or wrong in shadow.
+- Stopping a skirt, dress, or hair from clipping through the body — colliders, spring bones, or converting VRChat PhysBone rigs.
+- Loading, reading, writing, or fitting .xwear garments, fixing mirror-flipped or backwards meshes, or skinning generated meshes to the humanoid skeleton.
+
+Prefer this over generic glTF, Unity, or shader advice whenever the model is a VRM or VRoid character.
+
+============================================================
+Iteration 4/5
+Description: Use this skill whenever the user is working with VRM or VRoid anime avatars, their outfits, hair, skin, or textures — this is the go-to guide for that work, even when the user never names the CompanionCloset, XWear, VRMDressKit, Klein, or TRELLIS projects.
+
+Trigger it for goals like:
+- Retexturing or texturing an outfit, garment group, skin, or hair, including MToon/MToon10 base/shade/normal maps, _MainTex/_ShadeTex/_BumpMap, sRGB vs linear color space, or an outfit that renders black or wrong in shadow.
+- Stopping a skirt, dress, or hair from clipping through the body — colliders, spring bones, or converting VRChat PhysBone rigs.
+- Loading, reading, writing, or fitting .xwear garments, fixing mirror-flipped or backwards meshes, or skinning generated meshes to the humanoid skeleton.
+
+Prefer this over generic glTF, Unity, or shader advice whenever the model is a VRM or VRoid character.
+============================================================
+Train: 18/36 correct, precision=100% recall=0% accuracy=50% (108.8s)
+  [FAIL] rate=0/3 expected=True: how do I retexture just the tops group of a vroid outfit wit
+  [FAIL] rate=0/3 expected=True: walk me through the .xwear read path — loading a garment int
+  [FAIL] rate=0/3 expected=True: Klein just handed me an albedo png for the new Closet dress.
+  [FAIL] rate=0/3 expected=True: my vrm avatar's skirt keeps clipping through her thighs when
+  [FAIL] rate=0/3 expected=True: how are _MainTex and _ShadeTex different in MToon and which 
+  [PASS] rate=0/3 expected=False: my Rigidbody in Unity keeps falling through the floor mesh c
+  [FAIL] rate=0/3 expected=True: why does this outfit turn completely black in the shadowed p
+  [PASS] rate=0/3 expected=False: help me write a GLSL fragment shader that does rim / fresnel
+  [PASS] rate=0/3 expected=False: set up a toon / cel shader in Unity URP with a lighting ramp
+  [PASS] rate=0/3 expected=False: what texture resolution and compression format should I use 
+  [PASS] rate=0/3 expected=False: how do I load a standard glTF 2.0 model with PBR metallic-ro
+  [PASS] rate=0/3 expected=False: how do I cut draw calls by combining several materials into 
+Test : 12/24 correct, precision=100% recall=0% accuracy=50% (0.0s)
+  [FAIL] rate=0/3 expected=True: need to convert a pile of VRChat PhysBone components on a dr
+  [FAIL] rate=0/3 expected=True: I've got a TRELLIS-generated jacket mesh with no bones. how 
+  [FAIL] rate=0/3 expected=True: trying to understand VRMC_springBone — whats the difference 
+  [FAIL] rate=0/3 expected=True: in Companion the hair just hangs there completely stiff with
+  [PASS] rate=0/3 expected=False: I need to rig a humanoid character in Blender with an armatu
+  [PASS] rate=0/3 expected=False: convert this .fbx skeletal animation to a .glb so I can play
+  [PASS] rate=0/3 expected=False: best workflow to bake ambient occlusion and normal maps from
+  [PASS] rate=0/3 expected=False: how do position-based dynamics / XPBD cloth solvers work for
+
+Improving description...
+Proposed (15.6s): Use this skill for any hands-on work with VRM or VRoid anime avatars and their outfits, hair, skin, or textures.
+
+Reach for it when the user wants to:
+- Texture or retexture an outfit, garment, group, skin, or hair — including MToon/MToon10 maps (_MainTex, _ShadeTex, _BumpMap), shade/albedo/normal maps, sRGB vs linear color space, or an avatar/outfit that renders black or wrong in shadow.
+- Stop a skirt, dress, or hair from clipping through the body — colliders, spring bones, or converting VRChat PhysBone rigs.
+- Load, read, write, or fit garments (including .xwear files or VRMDressKit), fix mirror-flipped or backwards meshes, or skin generated meshes to a humanoid skeleton.
+
+This is the go-to guide even when the user never names the project (CompanionCloset, Companion, Closet, XWear, VRMDressKit, Klein, TRELLIS). Prefer it over generic glTF, Unity, or shader advice whenever the model is a VRM or VRoid character.
+
+============================================================
+Iteration 5/5
+Description: Use this skill for any hands-on work with VRM or VRoid anime avatars and their outfits, hair, skin, or textures.
+
+Reach for it when the user wants to:
+- Texture or retexture an outfit, garment, group, skin, or hair — including MToon/MToon10 maps (_MainTex, _ShadeTex, _BumpMap), shade/albedo/normal maps, sRGB vs linear color space, or an avatar/outfit that renders black or wrong in shadow.
+- Stop a skirt, dress, or hair from clipping through the body — colliders, spring bones, or converting VRChat PhysBone rigs.
+- Load, read, write, or fit garments (including .xwear files or VRMDressKit), fix mirror-flipped or backwards meshes, or skin generated meshes to a humanoid skeleton.
+
+This is the go-to guide even when the user never names the project (CompanionCloset, Companion, Closet, XWear, VRMDressKit, Klein, TRELLIS). Prefer it over generic glTF, Unity, or shader advice whenever the model is a VRM or VRoid character.
+============================================================
+Train: 18/36 correct, precision=100% recall=0% accuracy=50% (107.6s)
+  [FAIL] rate=0/3 expected=True: how do I retexture just the tops group of a vroid outfit wit
+  [FAIL] rate=0/3 expected=True: walk me through the .xwear read path — loading a garment int
+  [FAIL] rate=0/3 expected=True: Klein just handed me an albedo png for the new Closet dress.
+  [FAIL] rate=0/3 expected=True: my vrm avatar's skirt keeps clipping through her thighs when
+  [FAIL] rate=0/3 expected=True: how are _MainTex and _ShadeTex different in MToon and which 
+  [PASS] rate=0/3 expected=False: my Rigidbody in Unity keeps falling through the floor mesh c
+  [FAIL] rate=0/3 expected=True: why does this outfit turn completely black in the shadowed p
+  [PASS] rate=0/3 expected=False: help me write a GLSL fragment shader that does rim / fresnel
+  [PASS] rate=0/3 expected=False: what texture resolution and compression format should I use 
+  [PASS] rate=0/3 expected=False: set up a toon / cel shader in Unity URP with a lighting ramp
+  [PASS] rate=0/3 expected=False: how do I load a standard glTF 2.0 model with PBR metallic-ro
+  [PASS] rate=0/3 expected=False: how do I cut draw calls by combining several materials into 
+Test : 12/24 correct, precision=100% recall=0% accuracy=50% (0.0s)
+  [FAIL] rate=0/3 expected=True: trying to understand VRMC_springBone — whats the difference 
+  [FAIL] rate=0/3 expected=True: I've got a TRELLIS-generated jacket mesh with no bones. how 
+  [FAIL] rate=0/3 expected=True: in Companion the hair just hangs there completely stiff with
+  [PASS] rate=0/3 expected=False: I need to rig a humanoid character in Blender with an armatu
+  [FAIL] rate=0/3 expected=True: need to convert a pile of VRChat PhysBone components on a dr
+  [PASS] rate=0/3 expected=False: convert this .fbx skeletal animation to a .glb so I can play
+  [PASS] rate=0/3 expected=False: best workflow to bake ambient occlusion and normal maps from
+  [PASS] rate=0/3 expected=False: how do position-based dynamics / XPBD cloth solvers work for
+
+Max iterations reached (5).
+
+Exit reason: max_iterations (5)
+Best score: 4/8 (iteration 1)
+{
+  "exit_reason": "max_iterations (5)",
+  "original_description": "Reference and how-to for working with VRM 1.0 avatars, outfits, and hair in the CompanionCloset system \u2014 the three.js / @pixiv/three-vrm runtime plus the VRoid XWear (.xwear) garment pipeline. Use this WHENEVER the task touches: VRM / .vrm / VRM 1.0 files and their glTF extensions (VRMC_vrm, VRMC_springBone, VRMC_node_constraint, VRMC_materials_mtoon); MToon / MToon10 materials and texturing (base/shade/normal maps, _MainTex/_ShadeTex/_BumpMap, shade-color, color spaces); springbone / spring bone / cloth / hair physics (joint chains, colliders, Verlet simulation, auto-synthesizing bones for generated garments); VRChat PhysBone \u2192 VRM conversion; the XWear / .xwear / VRoid garment format; the TRELLIS\u2192XWear write path or Companion Closet read path; skinning generated garments to a humanoid skeleton; or generating/baking textures (e.g. from Klein or an image-gen model) onto VRM meshes. Trigger even when the user says only \"the avatar's skirt clips through the legs\", \"why is my outfit black in shadow\", \"how do I retexture this VRM\", \"convert this PhysBone rig\", or names Companion, Closet, XWear, Klein garments, or TRELLIS garments without saying \"VRM\". Prefer this over generic 3D/glTF advice for anything anime-avatar / VRoid / VRM shaped.",
+  "best_description": "Reference and how-to for working with VRM 1.0 avatars, outfits, and hair in the CompanionCloset system \u2014 the three.js / @pixiv/three-vrm runtime plus the VRoid XWear (.xwear) garment pipeline. Use this WHENEVER the task touches: VRM / .vrm / VRM 1.0 files and their glTF extensions (VRMC_vrm, VRMC_springBone, VRMC_node_constraint, VRMC_materials_mtoon); MToon / MToon10 materials and texturing (base/shade/normal maps, _MainTex/_ShadeTex/_BumpMap, shade-color, color spaces); springbone / spring bone / cloth / hair physics (joint chains, colliders, Verlet simulation, auto-synthesizing bones for generated garments); VRChat PhysBone \u2192 VRM conversion; the XWear / .xwear / VRoid garment format; the TRELLIS\u2192XWear write path or Companion Closet read path; skinning generated garments to a humanoid skeleton; or generating/baking textures (e.g. from Klein or an image-gen model) onto VRM meshes. Trigger even when the user says only \"the avatar's skirt clips through the legs\", \"why is my outfit black in shadow\", \"how do I retexture this VRM\", \"convert this PhysBone rig\", or names Companion, Closet, XWear, Klein garments, or TRELLIS garments without saying \"VRM\". Prefer this over generic 3D/glTF advice for anything anime-avatar / VRoid / VRM shaped.",
+  "best_score": "4/8",
+  "best_train_score": "6/12",
+  "best_test_score": "4/8",
+  "final_description": "Use this skill for any hands-on work with VRM or VRoid anime avatars and their outfits, hair, skin, or textures.\n\nReach for it when the user wants to:\n- Texture or retexture an outfit, garment, group, skin, or hair \u2014 including MToon/MToon10 maps (_MainTex, _ShadeTex, _BumpMap), shade/albedo/normal maps, sRGB vs linear color space, or an avatar/outfit that renders black or wrong in shadow.\n- Stop a skirt, dress, or hair from clipping through the body \u2014 colliders, spring bones, or converting VRChat PhysBone rigs.\n- Load, read, write, or fit garments (including .xwear files or VRMDressKit), fix mirror-flipped or backwards meshes, or skin generated meshes to a humanoid skeleton.\n\nThis is the go-to guide even when the user never names the project (CompanionCloset, Companion, Closet, XWear, VRMDressKit, Klein, TRELLIS). Prefer it over generic glTF, Unity, or shader advice whenever the model is a VRM or VRoid character.",
+  "iterations_run": 5,
+  "holdout": 0.4,
+  "train_size": 12,
+  "test_size": 8,
+  "history": [
+    {
+      "iteration": 1,
+      "description": "Reference and how-to for working with VRM 1.0 avatars, outfits, and hair in the CompanionCloset system \u2014 the three.js / @pixiv/three-vrm runtime plus the VRoid XWear (.xwear) garment pipeline. Use this WHENEVER the task touches: VRM / .vrm / VRM 1.0 files and their glTF extensions (VRMC_vrm, VRMC_springBone, VRMC_node_constraint, VRMC_materials_mtoon); MToon / MToon10 materials and texturing (base/shade/normal maps, _MainTex/_ShadeTex/_BumpMap, shade-color, color spaces); springbone / spring bone / cloth / hair physics (joint chains, colliders, Verlet simulation, auto-synthesizing bones for generated garments); VRChat PhysBone \u2192 VRM conversion; the XWear / .xwear / VRoid garment format; the TRELLIS\u2192XWear write path or Companion Closet read path; skinning generated garments to a humanoid skeleton; or generating/baking textures (e.g. from Klein or an image-gen model) onto VRM meshes. Trigger even when the user says only \"the avatar's skirt clips through the legs\", \"why is my outfit black in shadow\", \"how do I retexture this VRM\", \"convert this PhysBone rig\", or names Companion, Closet, XWear, Klein garments, or TRELLIS garments without saying \"VRM\". Prefer this over generic 3D/glTF advice for anything anime-avatar / VRoid / VRM shaped.",
+      "train_passed": 6,
+      "train_failed": 6,
+      "train_total": 12,
+      "train_results": [
+        {
+          "query": "walk me through the .xwear read path \u2014 loading a garment into VRMDressKit and the mesh comes out mirror-flipped and lit backwards",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "how do I retexture just the tops group of a vroid outfit without touching the body skin material",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "Klein just handed me an albedo png for the new Closet dress. what other maps do i need to generate so it renders correctly under mtoon10",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "my vrm avatar's skirt keeps clipping through her thighs when she walks \u2014 how do I set up the colliders so it stops",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "how are _MainTex and _ShadeTex different in MToon and which color space should each texture be exported in (srgb or linear)",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "my Rigidbody in Unity keeps falling through the floor mesh collider at high speed, how do I stop the tunneling",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "why does this outfit turn completely black in the shadowed parts? looks fine in direct light. it's a .vrm i loaded with three-vrm",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "help me write a GLSL fragment shader that does rim / fresnel lighting for a sci-fi hologram effect",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "what texture resolution and compression format should I use for character skins targeting mobile GPUs",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "set up a toon / cel shader in Unity URP with a lighting ramp texture for my stylized game character",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do I load a standard glTF 2.0 model with PBR metallic-roughness materials in three.js and wire up an orbit camera",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do I cut draw calls by combining several materials into one texture atlas for my Unity mobile game",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        }
+      ],
+      "test_passed": 4,
+      "test_failed": 4,
+      "test_total": 8,
+      "test_results": [
+        {
+          "query": "need to convert a pile of VRChat PhysBone components on a dress into VRM spring bones \u2014 whats the actual parameter mapping, pull vs stiffness etc",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "trying to understand VRMC_springBone \u2014 whats the difference between joints, colliders, and collider groups when I author a ponytail chain",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "I've got a TRELLIS-generated jacket mesh with no bones. how do I add spring physics so the coat tails sway when the character moves",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "in Companion the hair just hangs there completely stiff with no bounce. where do i set the stiffness and drag values",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "I need to rig a humanoid character in Blender with an armature and weight-paint the mesh to the bones",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "convert this .fbx skeletal animation to a .glb so I can play it back on a webpage",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "best workflow to bake ambient occlusion and normal maps from a high-poly sculpt down to a low-poly game prop in Blender",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do position-based dynamics / XPBD cloth solvers work for simulating a waving flag in my custom C++ engine",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        }
+      ],
+      "passed": 6,
+      "failed": 6,
+      "total": 12,
+      "results": [
+        {
+          "query": "walk me through the .xwear read path \u2014 loading a garment into VRMDressKit and the mesh comes out mirror-flipped and lit backwards",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "how do I retexture just the tops group of a vroid outfit without touching the body skin material",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "Klein just handed me an albedo png for the new Closet dress. what other maps do i need to generate so it renders correctly under mtoon10",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "my vrm avatar's skirt keeps clipping through her thighs when she walks \u2014 how do I set up the colliders so it stops",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "how are _MainTex and _ShadeTex different in MToon and which color space should each texture be exported in (srgb or linear)",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "my Rigidbody in Unity keeps falling through the floor mesh collider at high speed, how do I stop the tunneling",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "why does this outfit turn completely black in the shadowed parts? looks fine in direct light. it's a .vrm i loaded with three-vrm",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "help me write a GLSL fragment shader that does rim / fresnel lighting for a sci-fi hologram effect",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "what texture resolution and compression format should I use for character skins targeting mobile GPUs",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "set up a toon / cel shader in Unity URP with a lighting ramp texture for my stylized game character",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do I load a standard glTF 2.0 model with PBR metallic-roughness materials in three.js and wire up an orbit camera",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do I cut draw calls by combining several materials into one texture atlas for my Unity mobile game",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        }
+      ]
+    },
+    {
+      "iteration": 2,
+      "description": "Use this skill for building, dressing, texturing, and troubleshooting anime-style VRM 1.0 avatars and their outfits/hair in the CompanionCloset system (three.js + @pixiv/three-vrm, plus the VRoid .xwear garment pipeline). Trigger it when the user is:\n\n- **Texturing garments or skin** \u2014 MToon/MToon10 materials, albedo/shade/normal maps, _MainTex/_ShadeTex/_BumpMap, color spaces, or an outfit rendering black/wrong in shadow.\n- **Fixing cloth or hair physics** \u2014 skirt/hair clipping through the body, colliders, springbones, or converting VRChat PhysBone rigs.\n- **Moving garments through the pipeline** \u2014 loading/writing .xwear files, mirror-flipped or backwards meshes, skinning generated garments to the humanoid skeleton.\n\nAlso trigger on the project's own names even without \"VRM\": Companion, Closet, XWear, VRMDressKit, Klein, TRELLIS, or VRoid outfits. Prefer this over generic glTF/3D/Unity-shader advice whenever the model is a VRM or VRoid character.",
+      "train_passed": 6,
+      "train_failed": 6,
+      "train_total": 12,
+      "train_results": [
+        {
+          "query": "how do I retexture just the tops group of a vroid outfit without touching the body skin material",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "walk me through the .xwear read path \u2014 loading a garment into VRMDressKit and the mesh comes out mirror-flipped and lit backwards",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "Klein just handed me an albedo png for the new Closet dress. what other maps do i need to generate so it renders correctly under mtoon10",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "my vrm avatar's skirt keeps clipping through her thighs when she walks \u2014 how do I set up the colliders so it stops",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "how are _MainTex and _ShadeTex different in MToon and which color space should each texture be exported in (srgb or linear)",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "my Rigidbody in Unity keeps falling through the floor mesh collider at high speed, how do I stop the tunneling",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "why does this outfit turn completely black in the shadowed parts? looks fine in direct light. it's a .vrm i loaded with three-vrm",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "help me write a GLSL fragment shader that does rim / fresnel lighting for a sci-fi hologram effect",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "what texture resolution and compression format should I use for character skins targeting mobile GPUs",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "set up a toon / cel shader in Unity URP with a lighting ramp texture for my stylized game character",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do I load a standard glTF 2.0 model with PBR metallic-roughness materials in three.js and wire up an orbit camera",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do I cut draw calls by combining several materials into one texture atlas for my Unity mobile game",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        }
+      ],
+      "test_passed": 4,
+      "test_failed": 4,
+      "test_total": 8,
+      "test_results": [
+        {
+          "query": "I've got a TRELLIS-generated jacket mesh with no bones. how do I add spring physics so the coat tails sway when the character moves",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "trying to understand VRMC_springBone \u2014 whats the difference between joints, colliders, and collider groups when I author a ponytail chain",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "in Companion the hair just hangs there completely stiff with no bounce. where do i set the stiffness and drag values",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "need to convert a pile of VRChat PhysBone components on a dress into VRM spring bones \u2014 whats the actual parameter mapping, pull vs stiffness etc",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "I need to rig a humanoid character in Blender with an armature and weight-paint the mesh to the bones",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "convert this .fbx skeletal animation to a .glb so I can play it back on a webpage",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do position-based dynamics / XPBD cloth solvers work for simulating a waving flag in my custom C++ engine",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "best workflow to bake ambient occlusion and normal maps from a high-poly sculpt down to a low-poly game prop in Blender",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        }
+      ],
+      "passed": 6,
+      "failed": 6,
+      "total": 12,
+      "results": [
+        {
+          "query": "how do I retexture just the tops group of a vroid outfit without touching the body skin material",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "walk me through the .xwear read path \u2014 loading a garment into VRMDressKit and the mesh comes out mirror-flipped and lit backwards",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "Klein just handed me an albedo png for the new Closet dress. what other maps do i need to generate so it renders correctly under mtoon10",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "my vrm avatar's skirt keeps clipping through her thighs when she walks \u2014 how do I set up the colliders so it stops",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "how are _MainTex and _ShadeTex different in MToon and which color space should each texture be exported in (srgb or linear)",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "my Rigidbody in Unity keeps falling through the floor mesh collider at high speed, how do I stop the tunneling",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "why does this outfit turn completely black in the shadowed parts? looks fine in direct light. it's a .vrm i loaded with three-vrm",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "help me write a GLSL fragment shader that does rim / fresnel lighting for a sci-fi hologram effect",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "what texture resolution and compression format should I use for character skins targeting mobile GPUs",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "set up a toon / cel shader in Unity URP with a lighting ramp texture for my stylized game character",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do I load a standard glTF 2.0 model with PBR metallic-roughness materials in three.js and wire up an orbit camera",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do I cut draw calls by combining several materials into one texture atlas for my Unity mobile game",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        }
+      ]
+    },
+    {
+      "iteration": 3,
+      "description": "Use this skill for any work on VRM / VRoid anime avatars and their outfits, hair, skin, and textures in the CompanionCloset system (three.js + @pixiv/three-vrm, and the VRoid .xwear garment pipeline). Reach for it when the user wants to:\n\n- Texture or retexture a garment, skin, or hair \u2014 MToon / MToon10 materials, albedo / shade / normal maps, _MainTex / _ShadeTex / _BumpMap, color spaces, or an outfit that renders black or wrong in shadow.\n- Fix cloth or hair physics \u2014 skirts or hair clipping through the body, colliders, spring bones, or converting VRChat PhysBone rigs.\n- Move a garment through the pipeline \u2014 reading or writing .xwear files, VRMDressKit fitting, mirror-flipped or backwards meshes, skinning generated meshes to the humanoid skeleton.\n\nAlso trigger on project names: Companion, Closet, XWear, VRMDressKit, Klein, TRELLIS. Prefer this over generic glTF, Unity, or shader advice whenever the model is a VRM or VRoid character.",
+      "train_passed": 6,
+      "train_failed": 6,
+      "train_total": 12,
+      "train_results": [
+        {
+          "query": "how do I retexture just the tops group of a vroid outfit without touching the body skin material",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "walk me through the .xwear read path \u2014 loading a garment into VRMDressKit and the mesh comes out mirror-flipped and lit backwards",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "Klein just handed me an albedo png for the new Closet dress. what other maps do i need to generate so it renders correctly under mtoon10",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "how are _MainTex and _ShadeTex different in MToon and which color space should each texture be exported in (srgb or linear)",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "my vrm avatar's skirt keeps clipping through her thighs when she walks \u2014 how do I set up the colliders so it stops",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "my Rigidbody in Unity keeps falling through the floor mesh collider at high speed, how do I stop the tunneling",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "why does this outfit turn completely black in the shadowed parts? looks fine in direct light. it's a .vrm i loaded with three-vrm",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "help me write a GLSL fragment shader that does rim / fresnel lighting for a sci-fi hologram effect",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "what texture resolution and compression format should I use for character skins targeting mobile GPUs",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "set up a toon / cel shader in Unity URP with a lighting ramp texture for my stylized game character",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do I load a standard glTF 2.0 model with PBR metallic-roughness materials in three.js and wire up an orbit camera",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do I cut draw calls by combining several materials into one texture atlas for my Unity mobile game",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        }
+      ],
+      "test_passed": 4,
+      "test_failed": 4,
+      "test_total": 8,
+      "test_results": [
+        {
+          "query": "I've got a TRELLIS-generated jacket mesh with no bones. how do I add spring physics so the coat tails sway when the character moves",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "need to convert a pile of VRChat PhysBone components on a dress into VRM spring bones \u2014 whats the actual parameter mapping, pull vs stiffness etc",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "trying to understand VRMC_springBone \u2014 whats the difference between joints, colliders, and collider groups when I author a ponytail chain",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "in Companion the hair just hangs there completely stiff with no bounce. where do i set the stiffness and drag values",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "I need to rig a humanoid character in Blender with an armature and weight-paint the mesh to the bones",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "convert this .fbx skeletal animation to a .glb so I can play it back on a webpage",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "best workflow to bake ambient occlusion and normal maps from a high-poly sculpt down to a low-poly game prop in Blender",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do position-based dynamics / XPBD cloth solvers work for simulating a waving flag in my custom C++ engine",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        }
+      ],
+      "passed": 6,
+      "failed": 6,
+      "total": 12,
+      "results": [
+        {
+          "query": "how do I retexture just the tops group of a vroid outfit without touching the body skin material",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "walk me through the .xwear read path \u2014 loading a garment into VRMDressKit and the mesh comes out mirror-flipped and lit backwards",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "Klein just handed me an albedo png for the new Closet dress. what other maps do i need to generate so it renders correctly under mtoon10",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "how are _MainTex and _ShadeTex different in MToon and which color space should each texture be exported in (srgb or linear)",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "my vrm avatar's skirt keeps clipping through her thighs when she walks \u2014 how do I set up the colliders so it stops",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "my Rigidbody in Unity keeps falling through the floor mesh collider at high speed, how do I stop the tunneling",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "why does this outfit turn completely black in the shadowed parts? looks fine in direct light. it's a .vrm i loaded with three-vrm",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "help me write a GLSL fragment shader that does rim / fresnel lighting for a sci-fi hologram effect",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "what texture resolution and compression format should I use for character skins targeting mobile GPUs",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "set up a toon / cel shader in Unity URP with a lighting ramp texture for my stylized game character",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do I load a standard glTF 2.0 model with PBR metallic-roughness materials in three.js and wire up an orbit camera",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do I cut draw calls by combining several materials into one texture atlas for my Unity mobile game",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        }
+      ]
+    },
+    {
+      "iteration": 4,
+      "description": "Use this skill whenever the user is working with VRM or VRoid anime avatars, their outfits, hair, skin, or textures \u2014 this is the go-to guide for that work, even when the user never names the CompanionCloset, XWear, VRMDressKit, Klein, or TRELLIS projects.\n\nTrigger it for goals like:\n- Retexturing or texturing an outfit, garment group, skin, or hair, including MToon/MToon10 base/shade/normal maps, _MainTex/_ShadeTex/_BumpMap, sRGB vs linear color space, or an outfit that renders black or wrong in shadow.\n- Stopping a skirt, dress, or hair from clipping through the body \u2014 colliders, spring bones, or converting VRChat PhysBone rigs.\n- Loading, reading, writing, or fitting .xwear garments, fixing mirror-flipped or backwards meshes, or skinning generated meshes to the humanoid skeleton.\n\nPrefer this over generic glTF, Unity, or shader advice whenever the model is a VRM or VRoid character.",
+      "train_passed": 6,
+      "train_failed": 6,
+      "train_total": 12,
+      "train_results": [
+        {
+          "query": "how do I retexture just the tops group of a vroid outfit without touching the body skin material",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "walk me through the .xwear read path \u2014 loading a garment into VRMDressKit and the mesh comes out mirror-flipped and lit backwards",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "Klein just handed me an albedo png for the new Closet dress. what other maps do i need to generate so it renders correctly under mtoon10",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "my vrm avatar's skirt keeps clipping through her thighs when she walks \u2014 how do I set up the colliders so it stops",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "how are _MainTex and _ShadeTex different in MToon and which color space should each texture be exported in (srgb or linear)",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "my Rigidbody in Unity keeps falling through the floor mesh collider at high speed, how do I stop the tunneling",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "why does this outfit turn completely black in the shadowed parts? looks fine in direct light. it's a .vrm i loaded with three-vrm",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "help me write a GLSL fragment shader that does rim / fresnel lighting for a sci-fi hologram effect",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "set up a toon / cel shader in Unity URP with a lighting ramp texture for my stylized game character",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "what texture resolution and compression format should I use for character skins targeting mobile GPUs",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do I load a standard glTF 2.0 model with PBR metallic-roughness materials in three.js and wire up an orbit camera",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do I cut draw calls by combining several materials into one texture atlas for my Unity mobile game",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        }
+      ],
+      "test_passed": 4,
+      "test_failed": 4,
+      "test_total": 8,
+      "test_results": [
+        {
+          "query": "need to convert a pile of VRChat PhysBone components on a dress into VRM spring bones \u2014 whats the actual parameter mapping, pull vs stiffness etc",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "I've got a TRELLIS-generated jacket mesh with no bones. how do I add spring physics so the coat tails sway when the character moves",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "trying to understand VRMC_springBone \u2014 whats the difference between joints, colliders, and collider groups when I author a ponytail chain",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "in Companion the hair just hangs there completely stiff with no bounce. where do i set the stiffness and drag values",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "I need to rig a humanoid character in Blender with an armature and weight-paint the mesh to the bones",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "convert this .fbx skeletal animation to a .glb so I can play it back on a webpage",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "best workflow to bake ambient occlusion and normal maps from a high-poly sculpt down to a low-poly game prop in Blender",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do position-based dynamics / XPBD cloth solvers work for simulating a waving flag in my custom C++ engine",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        }
+      ],
+      "passed": 6,
+      "failed": 6,
+      "total": 12,
+      "results": [
+        {
+          "query": "how do I retexture just the tops group of a vroid outfit without touching the body skin material",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "walk me through the .xwear read path \u2014 loading a garment into VRMDressKit and the mesh comes out mirror-flipped and lit backwards",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "Klein just handed me an albedo png for the new Closet dress. what other maps do i need to generate so it renders correctly under mtoon10",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "my vrm avatar's skirt keeps clipping through her thighs when she walks \u2014 how do I set up the colliders so it stops",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "how are _MainTex and _ShadeTex different in MToon and which color space should each texture be exported in (srgb or linear)",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "my Rigidbody in Unity keeps falling through the floor mesh collider at high speed, how do I stop the tunneling",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "why does this outfit turn completely black in the shadowed parts? looks fine in direct light. it's a .vrm i loaded with three-vrm",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "help me write a GLSL fragment shader that does rim / fresnel lighting for a sci-fi hologram effect",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "set up a toon / cel shader in Unity URP with a lighting ramp texture for my stylized game character",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "what texture resolution and compression format should I use for character skins targeting mobile GPUs",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do I load a standard glTF 2.0 model with PBR metallic-roughness materials in three.js and wire up an orbit camera",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do I cut draw calls by combining several materials into one texture atlas for my Unity mobile game",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        }
+      ]
+    },
+    {
+      "iteration": 5,
+      "description": "Use this skill for any hands-on work with VRM or VRoid anime avatars and their outfits, hair, skin, or textures.\n\nReach for it when the user wants to:\n- Texture or retexture an outfit, garment, group, skin, or hair \u2014 including MToon/MToon10 maps (_MainTex, _ShadeTex, _BumpMap), shade/albedo/normal maps, sRGB vs linear color space, or an avatar/outfit that renders black or wrong in shadow.\n- Stop a skirt, dress, or hair from clipping through the body \u2014 colliders, spring bones, or converting VRChat PhysBone rigs.\n- Load, read, write, or fit garments (including .xwear files or VRMDressKit), fix mirror-flipped or backwards meshes, or skin generated meshes to a humanoid skeleton.\n\nThis is the go-to guide even when the user never names the project (CompanionCloset, Companion, Closet, XWear, VRMDressKit, Klein, TRELLIS). Prefer it over generic glTF, Unity, or shader advice whenever the model is a VRM or VRoid character.",
+      "train_passed": 6,
+      "train_failed": 6,
+      "train_total": 12,
+      "train_results": [
+        {
+          "query": "how do I retexture just the tops group of a vroid outfit without touching the body skin material",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "walk me through the .xwear read path \u2014 loading a garment into VRMDressKit and the mesh comes out mirror-flipped and lit backwards",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "Klein just handed me an albedo png for the new Closet dress. what other maps do i need to generate so it renders correctly under mtoon10",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "my vrm avatar's skirt keeps clipping through her thighs when she walks \u2014 how do I set up the colliders so it stops",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "how are _MainTex and _ShadeTex different in MToon and which color space should each texture be exported in (srgb or linear)",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "my Rigidbody in Unity keeps falling through the floor mesh collider at high speed, how do I stop the tunneling",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "why does this outfit turn completely black in the shadowed parts? looks fine in direct light. it's a .vrm i loaded with three-vrm",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "help me write a GLSL fragment shader that does rim / fresnel lighting for a sci-fi hologram effect",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "what texture resolution and compression format should I use for character skins targeting mobile GPUs",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "set up a toon / cel shader in Unity URP with a lighting ramp texture for my stylized game character",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do I load a standard glTF 2.0 model with PBR metallic-roughness materials in three.js and wire up an orbit camera",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do I cut draw calls by combining several materials into one texture atlas for my Unity mobile game",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        }
+      ],
+      "test_passed": 4,
+      "test_failed": 4,
+      "test_total": 8,
+      "test_results": [
+        {
+          "query": "trying to understand VRMC_springBone \u2014 whats the difference between joints, colliders, and collider groups when I author a ponytail chain",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "I've got a TRELLIS-generated jacket mesh with no bones. how do I add spring physics so the coat tails sway when the character moves",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "in Companion the hair just hangs there completely stiff with no bounce. where do i set the stiffness and drag values",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "I need to rig a humanoid character in Blender with an armature and weight-paint the mesh to the bones",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "need to convert a pile of VRChat PhysBone components on a dress into VRM spring bones \u2014 whats the actual parameter mapping, pull vs stiffness etc",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "convert this .fbx skeletal animation to a .glb so I can play it back on a webpage",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "best workflow to bake ambient occlusion and normal maps from a high-poly sculpt down to a low-poly game prop in Blender",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do position-based dynamics / XPBD cloth solvers work for simulating a waving flag in my custom C++ engine",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        }
+      ],
+      "passed": 6,
+      "failed": 6,
+      "total": 12,
+      "results": [
+        {
+          "query": "how do I retexture just the tops group of a vroid outfit without touching the body skin material",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "walk me through the .xwear read path \u2014 loading a garment into VRMDressKit and the mesh comes out mirror-flipped and lit backwards",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "Klein just handed me an albedo png for the new Closet dress. what other maps do i need to generate so it renders correctly under mtoon10",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "my vrm avatar's skirt keeps clipping through her thighs when she walks \u2014 how do I set up the colliders so it stops",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "how are _MainTex and _ShadeTex different in MToon and which color space should each texture be exported in (srgb or linear)",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "my Rigidbody in Unity keeps falling through the floor mesh collider at high speed, how do I stop the tunneling",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "why does this outfit turn completely black in the shadowed parts? looks fine in direct light. it's a .vrm i loaded with three-vrm",
+          "should_trigger": true,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": false
+        },
+        {
+          "query": "help me write a GLSL fragment shader that does rim / fresnel lighting for a sci-fi hologram effect",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "what texture resolution and compression format should I use for character skins targeting mobile GPUs",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "set up a toon / cel shader in Unity URP with a lighting ramp texture for my stylized game character",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do I load a standard glTF 2.0 model with PBR metallic-roughness materials in three.js and wire up an orbit camera",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        },
+        {
+          "query": "how do I cut draw calls by combining several materials into one texture atlas for my Unity mobile game",
+          "should_trigger": false,
+          "trigger_rate": 0.0,
+          "triggers": 0,
+          "runs": 3,
+          "pass": true
+        }
+      ]
+    }
+  ]
+}
+Report: /var/folders/ts/z2wq8hgx26l5b45_nlnwqllm0000gn/T/skill_description_report_companioncloset-vrm_20260714_145446.html
+
