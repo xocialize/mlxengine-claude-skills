@@ -98,6 +98,17 @@ metallib is unreliable; plain `swift run` does GPU inference fine).
 > gap). Because the SPM test target's metallib is unreliable for GPU, put quant gates in the **CLI
 > lane** (`swift run … --quant-gate`), not an XCTest. Detail: `swift-port-parity.md` Metal-watchdog
 > family item 2.
+
+> **⚠ Gate metric for DIFFUSION quant variants — PSNR/LPIPS against the fp reference at a fixed
+> seed, never FID** (NEUROSTREAM-ACTIONS QW4, 2026-08-01). FID is blind to quantization damage:
+> FLUX FID stays flat (20.3→19.9) across BF16/W8A8/NF4 while PSNR collapses 27.0→19.5 (SVDQuant,
+> arXiv 2411.05007 Table 1). W8 is effectively free (PSNR 27.0 / LPIPS 0.089 vs BF16); **weight-only
+> int4 on a DiT/UNet is real, measurable quality damage** — and buys no speed either, since
+> diffusion is compute-bound (`quantized_matmul` saves memory, not time). int4/int8 on
+> memory-bound autoregressive components (LLM backbones, token decoders) is unaffected — that
+> remains the standard lever. Fleet state 2026-08-01: every image-diffusion package defaults
+> `.bf16`, with int4 only as declared opt-in variants. Keep diffusion defaults ≥ int8-activation-free
+> (bf16/fp16/W8), and never let a FID number admit a quant variant.
 Read **`references/porting-conformance.md`** for the full topology, the `MLXToolKit` surface you
 implement against, the per-port conformance checklist (C0–C13), and a worked `ModelPackage` example.
 Read **`references/memory-harness.md`** for how to produce the empirical `minUnifiedMemory` every
@@ -211,3 +222,24 @@ own suite runs `MLXServeConformance.MaterializationConformance.check(…)` to pr
 | `~/Development/MLXEngine/EngineeringDocs/MLXEngineDocs/conformance.md` | The authoritative C0–C13 enumeration (ground truth for the gate). |
 | `~/Development/MLXEngine/EngineeringDocs/MLXEngineDocs/first-integration-notes.md` | The full first-package play-by-play. |
 | `mlx-porting` skill | The PyTorch/Python → Python-MLX port that this skill consumes. |
+
+---
+
+## Runtime-agnostic packages + the external-registration seam (2026-07-31)
+
+Two patterns proven by the first non-MLX engine package (`CoreAIRealESRGAN`, GAP-PROGRAM V13-E):
+
+1. **An engine package does not need MLX.** `MLXToolKit` (the contract layer: `ModelPackage`,
+   `PackageManifest`, requests/responses) is dependency-free — a package over a CoreAI/ANE core
+   depends on MLXToolKit alone and registers like any other. Conformance notes: pay expensive
+   preparation (E5RT specialization) in `load()` per MAT semantics; CAN cadence = entry checkpoint
+   + per-tile `Task.checkCancellation()`; `unload()` has no MLX pool to flush — dropping refs is
+   enough. `RequirementsManifest.Backend.coreMLANE` is the ANE placement value (named pre-CoreAI;
+   rename queued engine-side).
+
+2. **Higher-OS-floor backends enter via injection, not dependency.** SPM refuses a lower-floored
+   package depending on a higher-floored one (macOS-26 ForgeCore ↔ macOS-27 CoreAI package). The
+   seam: the host service accepts `ExternalRegistration` closures (name + capability +
+   `(MLXServeEngine) async throws -> PackageID`), runs them in `registerAll()` beside built-ins,
+   and surfaces outcomes under the same honesty rules. The APP's deployment target decides what to
+   inject; below the floor, nothing is injected and the incumbent backend serves the capability.
