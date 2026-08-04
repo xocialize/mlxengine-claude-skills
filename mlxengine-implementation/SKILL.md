@@ -40,6 +40,35 @@ The order matters. Each step depends on the one before it.
 6. **Reuse the settings UI** — `EngineSettingsView(storage:)` already gives you the storage panel (disk
    used / models installed / free space) and web-retrieval settings. Don't rebuild it.
 
+## When you land a change IN `mlx-engine-swift` itself — install the push guard
+
+Most consumer work never touches the engine repo. But app work regularly *does* reach into it — a
+contract bump because the app needs a capability or a request field, a registry row for a package the
+app is first to drive, a `Val 🟡 → ✅` flip after in-app validation (which the registry expects **in the
+same change** as the validation), or a docs fix. The moment you push there, one gate applies:
+
+```bash
+git config core.hooksPath Scripts/git-hooks   # once per engine clone
+```
+
+It runs the docs gates before anything reaches origin (`--no-verify` bypasses when you mean it). The
+CI job is `status-block-lint`, and it asserts the README status block against source and tags:
+capability count vs `Capability`'s cases, contract version vs `ContractVersion.current`, and the
+quoted tag vs the newest reachable from HEAD.
+
+⚠️ **Why it needs a hook at all.** Engine work lands by *direct push to main*, so the workflow's
+`pull_request` trigger never fires and the push trigger only reports after the fact. In 2026-08 the
+lint sat red for **8 pushes across 2.5 days and three tagged releases** before anyone acted. Branch
+protection is deliberately not set (it would block that same workflow), so the hook is the only thing
+in the path.
+
+**The consumer-side trap specifically:** an app validates a package in-app and flips its `Val` flag,
+or is the first consumer of a brand-new capability — and the registry row is the step that gets
+dropped, because the app-side work *feels* finished when the app works. A missing row is not caught
+directly; it shows up as the capability count going stale. Add the row first, then recount the
+package numbers **from the registry** rather than incrementing them — and note the lint deliberately
+does not check those two counts, so green CI ≠ a current status block.
+
 ## Topic roadmap (living skill)
 
 Extend this as consumer-side gaps surface. Each topic, once written, gets a `references/<topic>.md`.

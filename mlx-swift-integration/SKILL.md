@@ -141,6 +141,41 @@ which is where the silent-failure class surfaces (see `references/integration-le
                                       CHANGE — the registry is maintained by integration, never regenerated
 ```
 
+**Step 8 is CI-enforced, and there is a push-time guard — install it.** `mlx-engine-swift` runs
+`Scripts/status-block-lint.py` (workflow `status-block-lint`), which asserts three things *derived*
+rather than remembered: the README's capability count matches `Capability`'s cases, its contract
+version matches `ContractVersion.current`, and the tag it quotes is the newest reachable from HEAD.
+In the engine clone, once per checkout:
+
+```bash
+git config core.hooksPath Scripts/git-hooks
+```
+
+That runs the docs gates before anything reaches origin (`git push --no-verify` bypasses when you
+mean it — e.g. pushing the very commit that fixes the block).
+
+⚠️ **Why the hook exists, as a receipt.** The lint went red on 2026-08-02 on the first commit that
+shipped a release without refreshing the status block — exactly its job — and then **stayed red for
+8 pushes across 2.5 days and three tagged releases**, because engine work lands by *direct push to
+main*: the workflow's `pull_request` trigger never fires and the push trigger reports after the
+fact. A gate nobody stands in front of is a notification, not a gate. Server-side branch protection
+is deliberately NOT set (it would block that same direct-to-main workflow), so the hook is the only
+thing actually in the path.
+
+🔑 **The failure it catches is a Stage 2 step-8 miss, and the lint finds it INDIRECTLY.** When
+`mlx-bopbtl-swift` shipped, the package was published and the capability was in the contract, but
+**the registry row was never added** — so `defectDetect` had no provider row at all. Nothing checks
+for a missing row directly; what went red was the *capability count* (README said 32, `Capability`
+had 33). Two consequences worth internalizing:
+
+- **Fix the row before the numbers.** Bumping the count to match asserts "all N capabilities are
+  backed" — a claim the linked registry could not support — and the row then moves the counts again,
+  so you fix them twice. Row first, then recount **from the registry** rather than incrementing.
+- **The lint deliberately does NOT check the published/tracked package counts** (its own docstring
+  explains why: the registry carries in-flight rows from other sessions, and "a gate that cries wolf
+  gets disabled"). So green CI does not mean the status block is fully current — those two numbers
+  are still on you at step 8.
+
 **Never skip step 3 (offline contract build).** Proving the contract compiles before pulling the
 graph is the whole point of the two-layer split.
 
@@ -218,7 +253,7 @@ own suite runs `MLXServeConformance.MaterializationConformance.check(…)` to pr
 | `references/integration-lessons.md` | Stage 2 — the living gotchas checklist: `mlx-swift-lm` runtime, Metal, silent-failure class, audio/visual wrappers, sandbox/storage, `MLXServeEngine` coordinator, retrieval, version drift, build environment, wrapper-level live gates (`--e2e-<surface>-pkg`) + test-input hygiene. |
 | `references/engine-contract.md` | Contract design + conformance REVIEW: capability/mode/specialty, canonical outputs, `metaData` governance, parameter planes, the C0–C13 summary, versioning, stop-and-ask. |
 | `mlxengine-implementation` skill → `references/materialization.md` | The CONSUMER/app side of v0.19.0 auto-materialization — folder pick, `needsDownload` routing, progress UI, the live `MaterializationBench` `[MAT]` measurement. Package-author requirements live here in `porting-conformance.md` §4. |
-| `~/Development/MLXEngine/mlx-engine-swift/docs/model-registry.md` | The living provider registry — every package's capability/home/availability/validation/efficiency state. Update the package's row as Stage 2 step 8 (it's maintained by integration, not regenerated). |
+| `~/Development/MLXEngine/mlx-engine-swift/docs/model-registry.md` | The living provider registry — every package's capability/home/availability/validation/efficiency state. Update the package's row as Stage 2 step 8 (it's maintained by integration, not regenerated). A missed row surfaces only *indirectly*, as the status-block lint's capability count — install the push-time guard (step 8). |
 | `~/Development/MLXEngine/EngineeringDocs/MLXEngineDocs/conformance.md` | The authoritative C0–C13 enumeration (ground truth for the gate). |
 | `~/Development/MLXEngine/EngineeringDocs/MLXEngineDocs/first-integration-notes.md` | The full first-package play-by-play. |
 | `mlx-porting` skill | The PyTorch/Python → Python-MLX port that this skill consumes. |
