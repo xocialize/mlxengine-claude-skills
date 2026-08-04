@@ -1258,3 +1258,36 @@ GEMM window, mlx#3797/#3810, K ≥ 10240). The general lessons:
    ⚠️ Inplace ops in the reference (`nn.LeakyReLU(…, True)`) alias dump tensors — `.clone()` them.
 5. (Test harness, same session:) under `--build-system swiftbuild`, **swift-testing cannot run MLX**
    — metallib Bundle lookup resolves against the runner, not the .xctest. MLX tests must be XCTest.
+
+## 50. A precomputed table held as a plain attribute stays LAZY — materialize it at init, or it evaluates at a stream transition and crashes (arktts upstream review, 2026-07-31)
+
+Caught in review by an mlx-audio maintainer, not by any gate in the port. Rope tables (and any
+`inv_freq`/window/index table) are usually stored as plain attributes rather than module
+parameters, precisely so `Module` reflection doesn't collect them as weights — see the SCUNet
+entry (#REFLECTION) for why that's right. The consequence nobody states: **nothing else forces
+them.** `model.update()` / `mx.eval(model.parameters())` walk parameters, so a plain attribute's
+graph survives construction unevaluated and is first realized inside whichever stream or thread
+happens to run the first forward. Move the model across streams and it crashes.
+
+```python
+self._freqs_cis = _precompute_rope(cfg.max_seq_len, cfg.head_dim, cfg.rope_base)
+self._fast_freqs_cis = _precompute_rope(cfg.num_codebooks, cfg.fast_head_dim, cfg.rope_base)
+mx.eval((self._freqs_cis, self._fast_freqs_cis))   # ← required, not hygiene
+```
+
+**Why the port's own gates could not find it.** Every gate pinned ONE stream for its whole run —
+CPU-pinned parity gates (`mx.set_default_device(mx.cpu)`), a GPU smoke, a GPU quant lane. The bug
+does not exist *within* a stream; it exists at a **transition**, which no single-stream gate ever
+performs. A test suite can be thorough along every axis it varies and still be structurally blind
+to one it holds fixed.
+
+So add the transition itself as a gate — it is ~10 lines and needs no weights:
+
+```python
+mx.set_default_device(mx.gpu);  m = Model(tiny_config())      # construct on one stream
+mx.set_default_device(mx.cpu);  mx.eval(m(sample_input))      # forward on another
+```
+
+Generalizes past rope: **anything precomputed-and-constant that you deliberately kept off the
+parameter tree needs an explicit `mx.eval` at the end of `__init__`** — bias masks, causal masks,
+gather-index tables, codebook lookups, window tables.
