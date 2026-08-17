@@ -23,8 +23,21 @@ not as specs. Budget a measurement before building on any stated mechanism.
 | **N1** | *"The noise-awareness collapses to one line: ε = (k·σ)²… variation below the noise floor lands in base, never entering detail"* | **Wrong in direction AND magnitude.** `a = var/(var+ε)` *preserves* high variance and *smooths* low, and `detail = I − base`, so sub-ε variation is exactly what lands in detail. And on a clean source σ→0 ⇒ ε→0 ⇒ `base ≈ I` ⇒ `detail ≈ 0` — a **no-op on the clean images the feature is for** (measured: edge slope 0.04954 → 0.049555). ε is a *detail-scale* control (halo prevention); noise-awareness is the coring + the Polesel gate, keyed to `(k·σ)²` **not** ε. Two knobs, not one. |
 | **N2** | *Size* maps to "`ar_coeff_lag` + coefficient magnitude" | **Magnitude dominates; lag alone makes grain FINER.** A fixed gain budget spread over more taps dropped the nearest-neighbour weight 24/128 → 4/128 and correlation fell 0.33 → 0.17 → 0.096. For an AR (IIR) process, **correlation length is governed by total feedback gain, not kernel width** — at fixed gain, distance-3 correlation was *lower* at lag 3 (0.23) than lag 1 (0.28), despite lag 1 having no tap reaching 3 px. |
 
+| **⊕ ClassAdaptiveFloor** *(2026-08-16 — outside §N, same failure mode)* | Graphic content "clears floors with huge overshoot at tiny bitrates"; overshoot is the load-bearing signal, bpp only a guard, AND-not-OR because *"photographic people content (sevilla) shares the LOW-bpp region"* | **Overshoot is anti-correlated with the need, and the counter-example is mislabelled.** Overshoot ranks blank synthetic test cards ABOVE flat-vector signage ABOVE **dense-text** signage — it only appears when the search hits its descent limit, so it measures the SEARCH, not the content, and goes quiet exactly where artifacts glare. On 37 signage clips the ratchet fired **2×, both blank test cards, never on real signage**. And `sevilla` is **flat vector illustration** across 8 frames spanning its full 69 s — not photographic — so its low bpp was correct and the AND rule was built to exclude a clip that belonged. bpp cannot stand in either (graphic spans 0.0053–0.0866, 16×). ⇒ **Gated off**, Kit v0.13.0. |
+
 The method that caught all four is the program's own (`GAP-PROGRAM.md` §V method note): **run a probe
 rather than read a header, and include a control that proves the code path is live.**
+
+**The pattern is not confined to §N.** The fifth row above is planner policy, not a net-clean
+capability, and it failed the same way — a documented mechanism taken as spec, load-bearing on a
+single exemplar, unmeasured for nine months. Two additions the classifier case contributes to the
+method:
+
+- **Scrutinise the counter-example as hard as the positive.** One mislabelled clip decided which of
+  two signals governs every video Forge encodes.
+- **Assert what a feature FIRES on, not just that it runs.** 76 tests passed with the classifier
+  miscalibrated; none exercised its trigger. Evidence + tooling:
+  `mlxengine-forge/Tools/hintcal/FINDINGS.md`; records `AB-L-0053`, `AB-L-0054`.
 
 ## Where a row lives — decide before writing code
 
