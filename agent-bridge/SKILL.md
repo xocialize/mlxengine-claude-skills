@@ -20,9 +20,17 @@ Store: `/Volumes/Satechi/Development/AgentBridge-Store` (override with `--store`
 
 ## Protocol
 
-1. **Session start — the work-intake loop.** Run `bridge context <project>`
-   (top-level dir name under Development). It now leads with **"Owed by this
-   area"** — open asks and live tasks. The intended flow (the operator's stated
+1. **Session start — ASSUME YOUR IDENTITY.** Run `bridge assume <id>` — canonical
+   short ids (`mlx-image`, `mlx-ltx`, `mlx-engine`, `agent-bridge`, `dustin`, …;
+   `bridge areas` prints all 18 with aliases, owed counts, and last-assumed age;
+   the area's CLAUDE.md carries its id in a "Bridge identity" block). One command
+   returns owed asks + open tasks + the context pack, and logs a timestamped
+   assumption event. ⚠️ Assumption is INFORMATIONAL, never a lock: a stale
+   last-assumed age means the prior session is gone and the area was uncovered —
+   you take over by simply assuming; there is nothing to release. Recipients are
+   roster-validated (unknown → fail closed with the roster; aliases like
+   `mlxengine-image` resolve everywhere). `bridge context <project>` remains for
+   project packs without identity. The intended flow (the operator's stated
    ideal): check what's owed, ASSUME WHATEVER ROLE the request needs (roles are
    retired — AB-D-0018 — so port, Xcode, and UI work are all yours), claim it
    (`bridge set-state <AB-T-id> --state claimed`), execute using the bridge's
