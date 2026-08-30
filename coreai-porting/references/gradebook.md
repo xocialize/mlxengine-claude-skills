@@ -40,6 +40,8 @@ time.** It is a real measurement of difficulty and belongs in the receipt.
 | Model | Sealed? | We missed | They missed | Both, differently |
 |---|---|---|---|---|
 | `realesrgan` (SRVGG general) | **NO — see note** | nothing | `optimize()` cost, placement proof, fp16, energy | canvas: theirs 64², ours 128² |
+| `deform_conv2d` (BiRefNet blocker) | **YES** | nothing — their diagnosis was right as far as it went | that the op is unblockable **by PyTorch-level decomposition**, no custom lowering needed; and that the real ANE blocker is `gather`, not `deform_conv2d` | they route to ONNX `DeformConv` (opset 19); we decompose into supported ops |
+| `eomt` (capture failure) | **YES** | nothing | that the fix is a **value** branch on an `nn.Buffer`, not a static-shape fix; and that resolving it also keeps a `torch.rand` augmentation out of the asset | — |
 
 > **Integrity note on Phase 1.** This port was **not sealed.** `libreyolo/export/coreai.py` was
 > read in full during the initial project review, before this protocol existed. The comparison

@@ -217,9 +217,12 @@ def verdict(results: dict) -> list[str]:
         cold = r.get("cold_load_s")
         if cold is not None and cold < 1.0:
             out.append(
-                f"SUSPECT: ANE cold load was {cold:.2f}s. Real ANE specialization is SECONDS "
-                f"(measured 7-9 s for a 1.2M convnet, 254 s for a 226M UNet). A sub-second cold "
-                f"load on a cold cache means the graph was NOT compiled for the ANE."
+                f"NOTE: ANE load was {cold:.2f}s. A first-EVER load of a NEW asset specializes "
+                f"for seconds (measured 3.2-9.3 s for ~1.2M convnets, 254 s for a 226M UNet). "
+                f"But this signal is ONE-SHOT PER ASSET and is NOT restored by clearing "
+                f"~/Library/Caches/coreai-cache or com.apple.e5rt.e5bundlecache. On a "
+                f"previously-loaded asset a fast load means nothing. To get a fresh reading, "
+                f"re-export to a NEW path. Trust validation hits and the GPU-idle oracle instead."
             )
         if s.get("reject_reasons"):
             for reason, n in s["reject_reasons"].items():

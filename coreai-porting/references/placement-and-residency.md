@@ -160,9 +160,23 @@ Consequences:
 
 - **The diagnostic evidence — validation warnings, compiler errors — exists ONLY on the first
   cold-cache attempt.** Capture raw stderr on that run or lose it.
-- **A re-run with a warm cache tells you nothing.** To retry diagnosis, delete the asset's
-  entries under `~/Library/Caches/coreai-cache/<os-build>/<bundle-id>/<hash>` (identify by
-  mtime).
+- **A re-run with a warm cache tells you nothing.** Delete
+  `~/Library/Caches/coreai-cache` **and** `~/Library/Caches/com.apple.e5rt.e5bundlecache` —
+  the second is a separate layer and is easy to miss.
+- ⚠️ **CORRECTED 2026-08-30: clearing both is NOT sufficient to restore first-load behaviour.**
+  MEASURED: a never-before-loaded asset specialized in **3.25 s**, then **0.00 s** on the next
+  load. A much-loaded asset stayed at **0.18 s** regardless of what was cleared. Something
+  persists keyed by asset content beyond both documented paths.
+
+  Consequences:
+  - **Cold-load DURATION is a one-shot-per-asset signal.** Capture it on the very first load or
+    lose it.
+  - **To get a fresh duration reading, RE-EXPORT TO A NEW PATH.** That is the only reliable way
+    found so far.
+  - **Validation hits, by contrast, DO reappear on later loads** — they are the signal to lean
+    on, together with the GPU-idle-clock oracle.
+  - An earlier version of this file promoted "sub-second cold load ⇒ not on the ANE" to a rule.
+    That was over-claimed from one observation and is now demoted to a hint.
 - Any benchmark harness must be able to run cold, and must say which mode it ran in.
 
 ---
