@@ -13,11 +13,44 @@ macOS 27.0 / Xcode 27 beta.
 `coreai-torch` **pins torch to 2.11.x**. Use an isolated `uv` venv; do not install it into a
 shared environment.
 
-**Version-scoped shims are a trap worth knowing about.** LibreYOLO's `avg_pool2d` compat shim
-(a real off-by-one in upstream's resolver — the guard tests `args[4]`, the read is `args[5]`) is
-scoped to exactly `{"0.4.1"}` and **declines silently on any other version**. A toolchain bump
-therefore removes the fix with no error. If we adopt version-scoped shims, they must *log* when
-they decline, not just return False.
+### The `avg_pool2d` off-by-one — MEASURED, still live in 0.4.2
+
+**MEASURED 2026-08-29.** `coreai_torch/_aten_to_core.py` reads `count_include_pad` as:
+
+```python
+node.args[5] if len(node.args) > 4 and node.args[4] is not None else True
+```
+
+The guard tests element **4**; the read is element **5**. A node carrying exactly five arguments
+passes the guard and then raises `IndexError: tuple index out of range`.
+
+**Present in BOTH `0.4.1` and `0.4.2` (latest as of 2026-08-29).** Verified by source read *and*
+by execution.
+
+Minimal repro — an entirely ordinary module, not an exotic construction:
+
+```python
+nn.AvgPool2d(2, 2, 1, ceil_mode=True)     # -> 5-arg node -> IndexError
+F.avg_pool2d(x, 2, 2, 1, True)            # -> 5-arg node -> IndexError
+F.avg_pool2d(x, 2, 2, 1, True, False)     # -> 6-arg node -> converts fine
+```
+
+`ceil_mode=True` is what keeps element 4 in the exported graph. With default `ceil_mode`,
+`torch.export` normalizes the trailing args away, the node carries 3, the guard fails cleanly and
+the `else True` branch is correct — which is why this stays hidden until a model happens to use
+`ceil_mode`.
+
+**Workaround without patching upstream:** pass `count_include_pad` explicitly so the node carries
+six arguments.
+
+**The version-scoping trap.** LibreYOLO ships a shim for this, scoped to exactly
+`_AFFECTED_COREAI_TORCH_VERSIONS = {"0.4.1"}`, that **declines silently on any other version**.
+Since the defect is still present in 0.4.2, anyone who bumps the toolchain has the fix removed
+with no error and no log line. If we adopt version-scoped shims, they must **log when they
+decline**, not just return False.
+
+**OPEN — worth reporting upstream.** We have a minimal public repro. Also worth telling LibreYOLO
+their shim's version gate is now too narrow.
 
 ---
 

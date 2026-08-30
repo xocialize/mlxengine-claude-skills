@@ -41,6 +41,19 @@ time.** It is a real measurement of difficulty and belongs in the receipt.
 |---|---|---|---|---|---|
 | *(pending — Phase 1: `realesrgan`)* | | | | | |
 
+## Findings ahead of the first port (environment/toolchain research, 2026-08-29)
+
+| # | Finding | Status |
+|---|---|---|
+| 1 | `ComputeUnitKind.cpu/.gpu/.neural_engine` are **staticmethod factories, not constants** — the uncalled attribute raises `Invalid ComputeUnitKind` | MEASURED → `placement-and-residency.md`, `scripts/placement.py` |
+| 2 | `ComputeUnitKind.available_kinds()` order is **non-deterministic across processes** — indexing it selects a different unit each run | MEASURED (6 runs) → same |
+| 3 | **Fallback off the ANE cannot be forbidden** — `allowed_compute_unit_kinds` stays all 3 for any preference; `cpu_only()` is the only restriction primitive | MEASURED → same |
+| 4 | `SpecializationOptions.is_supported()` returns True **without** `USE_OS_COREAI=1`, contradicting its own docstring | MEASURED |
+| 5 | The `avg_pool2d` off-by-one is **still live in coreai-torch 0.4.2**; LibreYOLO's shim covers only 0.4.1 and declines silently | MEASURED, minimal repro → `runtime-api.md` |
+
+Findings 1–3 are the same class as the mislabeled-ANE-table incident, but at **API level**, and
+finding 2 is non-deterministic — it would defeat a careful person who spot-checked once.
+
 ---
 
 ## Ports completed before the protocol existed

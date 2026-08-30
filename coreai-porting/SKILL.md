@@ -122,3 +122,11 @@ The same cache is also a diagnostic hazard: **it caches failure-then-fallback**.
 | `references/debugging-methodology.md` | The error is opaque, redacted, or moves between runs |
 | `references/mlx-vs-coreai-fit.md` | Deciding which runtime a model belongs on |
 | `references/gradebook.md` | The sealed-port protocol and what each port taught |
+
+## Scripts
+
+`scripts/placement.py` — canonical placement helpers. Builds verified `SpecializationOptions`,
+times a lane, scans stderr for `ANECCompile` / `ane_validation_message`, and flags lanes whose
+latencies agree (two lanes with equal latency are the same lane). Run it standalone to print
+this machine's placement surface. **Use it instead of hand-rolling options** — it exists because
+three separate API traps each produce plausible mislabeled data.

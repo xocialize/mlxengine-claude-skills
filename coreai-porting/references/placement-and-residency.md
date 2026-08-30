@@ -20,17 +20,87 @@ This happened to us. A published "ANE" table was actually the GPU.
 # WRONG — the flag is inert, the label is a lie
 model = await AIModel.load(path)
 
-# RIGHT — build it, pass it, then echo it back OFF THE RUNTIME OBJECT
-opts = SpecializationOptions(preferred_compute_unit_kind=kind)
-if not opts.is_supported():
+# RIGHT — see the three API traps below; use scripts/placement.py
+from coreai.runtime import AIModel, ComputeUnitKind, SpecializationOptions
+if not SpecializationOptions.is_supported():
     raise SystemExit("placement unsupported here — refusing to produce mislabeled data")
+kind = ComputeUnitKind.neural_engine()          # CALL the factory — see trap 1
+opts = SpecializationOptions.from_preferred_compute_unit_kind(kind)
+assert str(opts.preferred_compute_unit_kind) == "Neural Engine"
 model = await AIModel.load(path, specialization_options=opts)
-print("actual:", model.specialization_options.preferred_compute_unit_kind)  # not the argv string
+print("actual:", opts.preferred_compute_unit_kind)   # off the object, not the argv string
 ```
 
-`SpecializationOptions.is_supported()` gates on `USE_OS_COREAI` semantics (wheel installs on
-macOS 27+ default to the OS framework). **Exit hard when False** — silent fallback produces
-mislabeled data, which is worse than no data.
+**Use `scripts/placement.py`** — it wraps all of this, times the lanes, scans stderr, and
+returns evidence instead of a claim.
+
+---
+
+## Three API traps in `SpecializationOptions`
+
+**MEASURED 2026-08-29, macOS 27.0 (26A5421a), M5 Max, `coreai-core==1.0.0b2`.** Each of these
+produces *plausible* wrong data rather than an obvious failure.
+
+### Trap 1 — the compute-unit kinds are factories, not constants
+
+`ComputeUnitKind.cpu` / `.gpu` / `.neural_engine` are **staticmethods**. You must call them:
+
+```python
+ComputeUnitKind.neural_engine()     # correct
+ComputeUnitKind.neural_engine       # raises: Invalid ComputeUnitKind
+```
+
+Passing the uncalled attribute raises `RuntimeError: Invalid ComputeUnitKind in
+preferred_compute_unit_kind`. That is loud — **but it is exactly the kind of exception a
+broad `try/except` swallows before falling back to default placement**, at which point every
+number in the run is mislabeled.
+
+### Trap 2 — `available_kinds()` order is NON-DETERMINISTIC across processes
+
+MEASURED over 6 consecutive processes:
+
+```text
+run 1: ['CPU', 'GPU', 'Neural Engine']
+run 2: ['Neural Engine', 'CPU', 'GPU']
+run 3: ['Neural Engine', 'GPU', 'CPU']
+run 4: ['GPU', 'CPU', 'Neural Engine']
+run 5: ['Neural Engine', 'GPU', 'CPU']
+run 6: ['Neural Engine', 'GPU', 'CPU']
+```
+
+Stable *within* a process, shuffled *between* them — the signature of hash/pointer iteration
+order.
+
+> **`available_kinds()[0]` selects a different compute unit on every run.** A harness that
+> indexes it produces silently mislabeled data that reads as *noise*, not as a bug — which
+> defeats even a careful person who spot-checks once.
+
+**Never index it. Select by name via the factories.**
+
+### Trap 3 — you cannot forbid fallback off the ANE
+
+`from_preferred_compute_unit_kind` sets a **preference**. MEASURED: `allowed_compute_unit_kinds`
+remains **all three** for every preferred lane.
+
+| Constructor | preferred | allowed |
+|---|---|---|
+| `default()` | `None` | all 3 |
+| `from_preferred_compute_unit_kind(ane())` | Neural Engine | **all 3** |
+| `cpu_only()` | `None` | CPU only |
+
+`cpu_only()` is the **only** restriction primitive the API exposes. There is no
+`neural_engine_only()`.
+
+> **Silent fallback off the ANE is structurally unavoidable through this API.** That is not a
+> bug in our harness — it is the contract. It is *why* the control lanes and the stderr scan
+> below are the only defence, and why a completed run is never evidence of ANE execution.
+
+### Also noted
+
+`is_supported()` returned **True without `USE_OS_COREAI=1`**, contradicting its own docstring
+("Returns True on macOS with env var `USE_OS_COREAI=1`"). The runtime module resolves to
+`_coreai_runtime_os`, so the wheel appears to default to the OS framework on macOS 27. Treat the
+docstring as stale; trust the returned value.
 
 ---
 
