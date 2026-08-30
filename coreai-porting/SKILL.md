@@ -39,6 +39,10 @@ recipes get A/B'd, not adopted.
 
 ---
 
+> ⚠️ **A CoreAI process dies after ~8,000 inferences** — uncatchable, every compute unit,
+> not fixed by releasing outputs or reloading the model (`apple/coreai-torch#75`).
+> → `references/runtime-limits.md`. This bounds every long-running design.
+
 ## The two rules that cost us the most
 
 **1. A preference is not a placement.** Requesting a compute unit does not mean you got it, and
@@ -125,6 +129,7 @@ The same cache is also a diagnostic hazard: **it caches failure-then-fallback**.
 | `references/precision.md` | fp16 parity is bad, or mixed precision won't legalize |
 | `references/compression.md` | Quantization / palettization / pruning via `coreai-opt` |
 | `references/export-recipes.md` | Capture or lowering fails; per-family graph prep |
+| `references/runtime-limits.md` | **Read before designing any long-running process** — the ~8,000-inference hard ceiling |
 | `references/known-upstream-defects.md` | **Before every port** — the harvested failure-mode catalogue from `apple/coreai-torch` issues |
 | `references/case-eomt-capture.md` | A `GuardOnDataDependentSymNode` capture failure, root-caused and fixed — includes the grep-the-graph-dump technique |
 | `references/case-deformable-conv.md` | A complete worked triage-ladder pass — decompose-in-PyTorch beating a custom lowering, and how scale changed the ANE verdict |

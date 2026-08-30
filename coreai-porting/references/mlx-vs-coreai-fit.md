@@ -39,6 +39,12 @@ else is engineering ergonomics, not capability. So the question decomposes:
 Reaching for CoreAI *for speed* is usually wrong. Reach for the ANE when the workload is
 **energy-, thermal-, or host-memory-bound** — and accept latency and ~4 dB as the price.
 
+**(a2) A CoreAI process currently dies after ~8,000 inferences.** MEASURED: an uncatchable
+Swift precondition on IOSurface output storage, on **every** compute unit, not fixed by releasing
+outputs or reloading the model (`apple/coreai-torch#75`). MLX has no equivalent ceiling. **For
+any sustained high-rate workload this outranks every energy argument above** — an efficiency win
+is worth nothing if the process cannot stay alive. → `runtime-limits.md`.
+
 **(b) Choosing CoreAI does not mean getting the ANE.** MEASURED (deformable conv, decoder
 scale): the "ANE" lane ran **5.5× slower than simply using the GPU** (39 vs 216 inf/s) because
 `gather` was rejected and the graph partitioned. **A CoreAI port that silently misses the ANE can
@@ -71,6 +77,10 @@ read what it rejected.
 ### The shape of the answer
 
 ```text
+Will this process do more than ~8,000 inferences without restarting?
+  yes -> MLX, or accept process recycling (coreai-torch#75). This gate comes FIRST.
+  no  -> continue:
+
 Does the workload care about energy, heat, or host memory more than latency?
   no  -> the ANE is not the reason to be here. Pick on ergonomics:
          fixed geometry + AOT -> CoreAI;  runtime shapes, fast iteration,
