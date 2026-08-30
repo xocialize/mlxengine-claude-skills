@@ -1,127 +1,109 @@
-# CoreAI vs MLX vs both — the fit journal
+# The gradebook — sealed-port protocol and per-model results
 
-**This is a JOURNAL, not a decision tree.** It exists to answer "given this model, which runtime
-does it belong on?" — and as of 2026-08-29 we have **two data points**. Everything marked
-ASSUMED below is a hypothesis awaiting a port, and must not be used as a basis for a decision
-without saying so out loud.
-
-**Every port adds a row.** That is the point of the collection.
+The purpose of the collection is **skill**, not throughput. Ported models are the evidence that
+pays for the skill content. This file records the protocol and what each port actually taught.
 
 ---
 
-## What "both" means
+## Sealed-oracle protocol
 
-Not a hedge. MEASURED on Real-ESRGAN: the MLX and CoreAI siblings serve **different tiers of
-the same product** — CoreAI/ANE for the low-energy, memory-constrained, fixed-tile path; MLX/GPU
-for the flexible-geometry, whole-frame path. Shipping both and routing at runtime is a real
-answer, and on that model it was the right one.
+LibreYOLO's `libreyolo/export/coreai.py` is 771 lines of solved problems. Reading it first hands
+us the answers and teaches us nothing; never reading it wastes the best grading key available.
+So: **seal it, attempt it, then grade against it.**
 
-The corollary is a documentation duty: **the two ports have inverted geometry contracts** (see
-below), and each package must say so, or a future maintainer will "fix" one toward the other.
+1. **Seal.** Do not open `libreyolo/export/coreai.py` for this family. Take the PyTorch model
+   from `libreyolo/models/<family>` — a clean seam, since the model source is not the export
+   path.
+2. **Attempt.** Port from the model source and the CoreAI docs alone.
+   **Write down the raw error text BEFORE you know the cause.** That text is the single most
+   valuable thing a skill can carry, and it is unrecoverable once you know the answer.
+3. **Unseal and diff.** Then read their rewrite for that family.
+4. **Grade three ways:**
+   - **They caught it / we missed it** → a gap we would have shipped. Highest-value content.
+   - **We caught it / they missed it** → our finding. Candidate upstream issue or PR.
+   - **Both, differently** → measure both. That comparison is content too.
+5. **Bank it.** Reference file here + a typed AgentBridge receipt.
 
----
+**Sequencing note:** the *harness* diff comes after the first sealed port, not before — otherwise
+their `REL_TOL` and sensitivity-margin design anchors ours and we never derive the reasoning.
 
-## Decided axes (MEASURED)
-
-### 1. Energy — CoreAI/ANE wins, but the size of the win depends on the opponent
-**MEASURED (SRVGG, M5 Max, t128):** ANE ties well-tuned MLX-GPU on wall clock while drawing
-**≈4.5–4.9× less energy per frame** (~17 W vs ~83 W over idle), and does not thermally throttle.
-
-**REFINED 2026-08-29 — name the opponent.** That 4.7× is against **MLX-GPU fp32**. Measured
-against **CoreAI-GPU** (fp16, static — a far stronger opponent, which the same receipt records
-beating MLX-GPU by 2.2–2.4×), the ANE advantage is **1.94×**:
-
-| lane | W over idle | inf/s | mJ/inference |
-|---|---|---|---|
-| CoreAI-GPU | 106.2 | 808.4 | 131.4 |
-| CoreAI-ANE | **12.4** | 183.4 | **67.6** |
-
-The consistency check works: 4.7 ÷ ~2.3 ≈ 2.0. **Always state which GPU path the ANE is being
-compared against** — "4.7× less energy" and "1.94× less energy" are the same hardware, different
-baselines, and quoting the wrong one oversells by 2.4×.
-
-Thermal behaviour still favours the ANE unambiguously: MEASURED GPU sag **1620 → 1568 MHz within
-10 s** of sustained load; the ANE lane showed none, and held the GPU at its **338 MHz idle
-clock** throughout — which is also the residency oracle.
-
-→ If the workload is sustained, battery-bound, or thermally constrained, this axis alone can
-decide it.
-
-### 2. Host memory — CoreAI/ANE wins by orders of magnitude
-**MEASURED (SRVGG, 1080p→×4):** ANE activations stay on-die, so process footprint is host-side
-accumulation buffers only — **19 MB resident / 0.86 GB peak**, vs the MLX sibling's **21.24 GB**
-whole-frame.
-
-→ If the host is memory-governed, this is not a tiebreak, it is the answer.
-
-### 3. Geometry — the contracts are INVERTED
-**MEASURED.** CoreAI tile/canvas geometry is a **build-time property of the asset**: one
-executable per static shape. MLX geometry is **runtime-injectable**.
-
-→ A model whose input geometry genuinely varies at runtime costs CoreAI one asset per shape.
-Count the shapes before committing.
-
-### 4. Attention-heavy graphs — CoreAI needs rewriting, and it may still be blocked
-**MEASURED (Moebius, 226M latent-diffusion UNet):** rank-6 reshapes from multi-index einsums are
-hard-rejected (rank ≤ 5), and a **compositional ANECCompiler bug** blocked the graph even after
-the rewrite. Filed as `apple/coreai-models#138`; still open.
-
-→ Worth noting the consolation prize is real: the ANE-motivated rewrite made the **GPU** lane
-4.1× faster. A CoreAI attempt that fails to reach the ANE can still pay for itself.
-
-### 5. First-load cost scales hard with graph size
-**MEASURED:** E5RT specialization ~8 s at 1.4M params, **254 s** at 226M. OS-cached after.
-
-→ For a large model in an interactive app, this is a product decision, not just a number.
+**Discipline cost, stated honestly:** this is slower per model, and the temptation to peek peaks
+exactly when a port is stuck — which is when the learning is worth the most. **Log the stuck
+time.** It is a real measurement of difficulty and belongs in the receipt.
 
 ---
 
-## ASSUMED axes — hypotheses, not findings
+## Grading log
 
-Listed so they can be closed by measurement rather than argued about.
+*One entry per sealed port. Empty until Phase 1 completes.*
 
-| Axis | Hypothesis | How to close it |
-|---|---|---|
-| **Autoregressive / KV-cache models** | MLX is the better fit; CoreAI `state_names` exists but is unproven for us | Port one small stateful model. **No LLM in the LibreYOLO pool** — needs a separate candidate |
-| **Small convnets** | CoreAI/ANE should dominate on every axis | Phase 1 classifiers (`resnet`, `mobilenetv4`) |
-| **Dev velocity** | MLX iterates far faster; CoreAI export/specialize cycle is slow | Time both loops on the same model and record it |
-| **Quantization below fp16** | Unknown for CoreAI; MLX quant is well understood | Phase 3 compression sweep |
-| **Multi-function / promptable models** | CoreAI's multi-function asset may beat MLX's re-encode | SAM family, Phase 3 |
-| **Very large models (>1B)** | E5RT cost and asset size may make CoreAI impractical | Untested; may stay untested |
-
----
-
-## Provisional triage — USE WITH THE CAVEAT
-
-Good enough to *order investigation*, **not** good enough to close a decision. Say which axes
-are ASSUMED whenever you use it.
-
-```text
-Is the geometry fixed at build time?           no  → MLX leads; count CoreAI shapes first
-Is the host memory- or energy-governed?        yes → CoreAI leads, strongly (MEASURED)
-Is it attention/einsum-heavy?                  yes → expect ANE rewrite work; may stay blocked
-Is it autoregressive with a KV cache?          yes → MLX (ASSUMED — unproven)
-Is it a plain convnet at modest size?          yes → CoreAI (ASSUMED beyond SRVGG)
-Does it serve two product tiers?               yes → BOTH is a real answer (MEASURED once)
-```
-
----
-
-## The journal
-
-| Date | Model | Class | Verdict | Basis |
+| Model | Sealed? | We missed | They missed | Both, differently |
 |---|---|---|---|---|
-| 2026-07-31 | Real-ESRGAN SRVGG (1.4M) | plain dense convnet | **BOTH** — CoreAI/ANE fast tier, MLX flexible tier | MEASURED: parity 58–69 dB, energy 4.5–4.9×, memory 19 MB vs 21.24 GB |
-| 2026-08-29 | Real-ESRGAN SRVGG re-port (calibration) | plain dense convnet | **BOTH, confirmed** | MEASURED: ANE 68.60 dB, 5.65 ms, 67.6 mJ/inf; CoreAI-GPU 72.62 dB, 1.40 ms, 131.4 mJ/inf. ANE **1.94×** more energy-efficient but **4× slower** and **4 dB less accurate** than CoreAI-GPU |
-| 2026-08-01 | Moebius UNet (226M) | latent-diffusion, λ-attention | **MLX** — CoreAI/ANE blocked | MEASURED: rank-6 reject, then compositional ANECCompiler bug (upstream #138). GPU lane still gained 4.1× from the rewrite |
+| `realesrgan` (SRVGG general) | **NO — see note** | nothing | `optimize()` cost, placement proof, fp16, energy | canvas: theirs 64², ours 128² |
+| `deform_conv2d` (BiRefNet blocker) | **YES** | nothing — their diagnosis was correct as far as it went | that the op is unblockable **by PyTorch-level decomposition**, needing no custom lowering; and that the real ANE blocker is `gather`, not `deform_conv2d` | they route to ONNX `DeformConv` (opset 19); we decompose into supported ops |
 
-*Add one row per port. A row with no measurement is not a row.*
+> **Integrity note on Phase 1.** This port was **not sealed.** `libreyolo/export/coreai.py` was
+> read in full during the initial project review, before this protocol existed. The comparison
+> below is still useful, but it is **not a graded sealed port**, and must not be counted as one.
+> **The protocol starts clean at Phase 2 (`birefnet` / `eomt` / `swinir`).**
+
+**Phase 1 result — harness VALIDATED.** Independently derived architecture, export, parity and
+placement harness reproduce AB-R-0047 on a newer OS build (26A5421a vs 25A5388g):
+
+| | oracle | ours | Δ |
+|---|---|---|---|
+| fp16 ANE mean PSNR | 68.51 dB | **68.60 dB** | +0.09 |
+| GPU median clock under load | 1616 MHz | **1616 MHz** | 0 |
+
+Full receipt: `CoreAI/coreai-collection/receipts/realesrgan-general-fp16-s128.json`.
+
+**Comparison with LibreYOLO (unsealed):**
+- **Agreement:** `realesrgan` needs *no* special CoreAI graph preparation — it is in none of
+  their three family-prep sets and has no `_wrap_for_family` branch. We independently needed
+  none either. Their SRVGG forward is identical to what we derived from the checkpoints.
+- **They validate at 64², we ported at 128².** Not wrong — they validate conversion, not
+  performance — but our own oracle measured 64² as the *worst* config at 1080p (1053 ms vs
+  852 ms at t128). A concrete instance of *validated ≠ deployment-optimal*.
+- **They validate their own `LibreRealESRGANx4t` checkpoint**, not the original
+  `realesr-general-x4v3`, so the two parity claims are not about the same weights.
+- **They call `optimize()` unconditionally** — now measured to cost 58% on the GPU lane and
+  double the asset. So does Apple's quickstart. So did our own prior recipe.
+
+## Findings ahead of the first port (environment/toolchain research, 2026-08-29)
+
+| # | Finding | Status |
+|---|---|---|
+| 1 | `ComputeUnitKind.cpu/.gpu/.neural_engine` are **staticmethod factories, not constants** — the uncalled attribute raises `Invalid ComputeUnitKind` | MEASURED → `placement-and-residency.md`, `scripts/placement.py` |
+| 2 | `ComputeUnitKind.available_kinds()` order is **non-deterministic across processes** — indexing it selects a different unit each run | MEASURED (6 runs) → same |
+| 3 | **Fallback off the ANE cannot be forbidden** — `allowed_compute_unit_kinds` stays all 3 for any preference; `cpu_only()` is the only restriction primitive | MEASURED → same |
+| 4 | `SpecializationOptions.is_supported()` returns True **without** `USE_OS_COREAI=1`, contradicting its own docstring | MEASURED |
+| 5 | The `avg_pool2d` off-by-one is **still live in coreai-torch 0.4.2**; LibreYOLO's shim covers only 0.4.1 and declines silently | MEASURED, minimal repro → `runtime-api.md` |
+
+Findings 1–3 are the same class as the mislabeled-ANE-table incident, but at **API level**, and
+finding 2 is non-deterministic — it would defeat a careful person who spot-checked once.
 
 ---
 
-## What would make this skill actually good
+## Ports completed before the protocol existed
 
-The honest gap: **two ports is not a fit model.** To route confidently we need coverage across
-the axes above — at minimum a small convnet, an attention model that *succeeds* on ANE, a
-multi-function asset, and one stateful model. Until then this file's job is to be explicit
-about what it does not know.
+Not sealed — no grading key existed at the time. Recorded for completeness.
+
+| Model | Date | Outcome | Where the findings live |
+|---|---|---|---|
+| Real-ESRGAN SRVGG (1.4M) | 2026-07-31 | Shipped to `coreai-community` as `Real-ESRGAN-CoreAI` | AB-R-0047; `precision.md`, `measurement-protocol.md`, `mlx-vs-coreai-fit.md` |
+| Moebius UNet (226M) | 2026-08-01 | ANE blocked; filed `apple/coreai-models#138` | AB-L-0028; `ane-eligibility.md`, `debugging-methodology.md`, `precision.md` |
+
+### Source locations
+
+| What | Where |
+|---|---|
+| Real-ESRGAN Swift package + model card | `Development/mlxengine-image/PROD/coreai-realesrgan-swift` |
+| Real-ESRGAN export script | `srvgg_export.py` (in that repo); also `Development/coreai-probe/scripts/` |
+| Moebius CoreAI work + notes | `Development/mlxengine-image/WIP/moebius-m0/coreai/`, `COREAI-NOTES.md` |
+| Upstream repro for #138 | `moebius-m0/coreai/repro_upstream.py` (public weights) |
+| Probe harness, banked results | `Development/coreai-probe/` (`scripts/`, `results/srvgg`, `results/edsr`) |
+| Programme context | GAP-PROGRAM V13 / V13-P / V13-E; `Development/mlxengine-todo/` |
+| Vendored Apple skill (pristine) | `~/.claude/skills/working-with-coreai/` |
+| Pre-migration backup of the appendix | `CoreAI/coreai-collection/.working-with-coreai.SKILL.md.pre-phase0.bak` |
+
+**Re-test `#138` per macOS update** before assuming the ANE door is still closed.

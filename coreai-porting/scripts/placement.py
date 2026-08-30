@@ -31,6 +31,7 @@ import os
 import re
 import statistics
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -72,17 +73,83 @@ def describe(opts) -> str:
     return f"preferred={opts.preferred_compute_unit_kind} allowed={allowed}"
 
 
+class _NativeCapture:
+    """Handle yielded by capture_native(). Call .read() at any time."""
+
+    def __init__(self, tmp):
+        self._tmp = tmp
+
+    def read(self) -> str:
+        """Flush the native fds, then read everything written so far.
+
+        Must seek explicitly: the file position sits at the END after writes,
+        so a bare read() returns "" — a bug that silently reported 0 diagnostics
+        on a run that emitted 96 of them.
+        """
+        sys.stdout.flush()
+        sys.stderr.flush()
+        pos = self._tmp.tell()
+        self._tmp.seek(0)
+        data = self._tmp.read()
+        self._tmp.seek(pos)
+        return data
+
+
+@contextlib.contextmanager
+def capture_native():
+    """Capture BOTH fd 1 and fd 2 at the FILE-DESCRIPTOR level.
+
+    MEASURED 2026-08-29, and it invalidated two earlier versions of this module:
+
+    1. The ANE validation diagnostics are written by NATIVE code straight to the
+       process file descriptors, and some go to STDOUT rather than stderr.
+       `contextlib.redirect_stderr` only rebinds Python's `sys.stderr` object,
+       so it captures NONE of them.
+    2. Reading the temp file inside the with-block without seeking returns "" —
+       the position is at the end. Use the yielded object's .read().
+
+    Usage:
+        with capture_native() as cap:
+            ...                      # convert / load / run
+            text = cap.read()        # any time, inside or before exit
+    """
+    with tempfile.TemporaryFile(mode="w+") as tmp:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        so, se = os.dup(1), os.dup(2)
+        os.dup2(tmp.fileno(), 1)
+        os.dup2(tmp.fileno(), 2)
+        try:
+            yield _NativeCapture(tmp)
+        finally:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os.dup2(so, 1)
+            os.dup2(se, 2)
+            os.close(so)
+            os.close(se)
+
+
 _ANE_FAIL = re.compile(r"ANECCompile\(\)\s*FAILED|_ANECompiler", re.I)
-_ANE_VALID = re.compile(r"ane_validation_message")
+_ANE_VALID = re.compile(r"ane_validation_message|ANE I/O op|ane_?validation", re.I)
+_ANE_REJECT = re.compile(r"failed: ([^\"<>]{6,120})")
 
 
 def scan_stderr(text: str) -> dict:
     """Extract the ANE signals buried in megabytes of MLIR `warning: loc(...)`."""
     lines = [ln for ln in text.splitlines() if not ln.startswith("warning: loc")]
+    # The interesting text is buried in megabytes of MLIR; pull the reasons and
+    # the torch op identifiers out rather than keeping the blobs.
+    reasons = {}
+    for m in _ANE_REJECT.finditer(text):
+        reasons[m.group(1).strip()] = reasons.get(m.group(1).strip(), 0) + 1
+    ops = sorted(set(re.findall(r'string<"([a-z_][a-z_0-9]*)"', text)))
     return {
         "anecompile_failed": bool(_ANE_FAIL.search(text)),
-        "validation_messages": [ln.strip() for ln in lines if _ANE_VALID.search(ln)][:40],
-        "errors": [ln.strip() for ln in lines if "error" in ln.lower()][:40],
+        "n_validation_hits": len(_ANE_VALID.findall(text)),
+        "reject_reasons": reasons,
+        "rejected_ops": ops[:25],
+        "errors": [ln.strip() for ln in lines if "error" in ln.lower()][:20],
     }
 
 
@@ -144,14 +211,26 @@ def verdict(results: dict) -> list[str]:
                     f"— two lanes with equal latency are the same lane"
                 )
     if "ane" in results and results["ane"]:
-        s = results["ane"]["stderr"]
-        if s["anecompile_failed"]:
+        r = results["ane"]
+        # accept either {"stderr": scan} or the scan fields inlined
+        s = r.get("stderr") or r
+        cold = r.get("cold_load_s")
+        if cold is not None and cold < 1.0:
+            out.append(
+                f"SUSPECT: ANE cold load was {cold:.2f}s. Real ANE specialization is SECONDS "
+                f"(measured 7-9 s for a 1.2M convnet, 254 s for a 226M UNet). A sub-second cold "
+                f"load on a cold cache means the graph was NOT compiled for the ANE."
+            )
+        if s.get("reject_reasons"):
+            for reason, n in s["reject_reasons"].items():
+                out.append(f"ANE REJECTED {n}x: {reason}")
+        if s.get("anecompile_failed"):
             out.append(
                 "ANECCompile() FAILED on the ANE lane — this ran on the GPU with an "
                 "'ANE' label. The cache has now cached that fallback; clear it to re-diagnose."
             )
-        if s["validation_messages"]:
-            out.append(f"{len(s['validation_messages'])} ane_validation_message line(s) — see stderr scan")
+        if s.get("n_validation_hits"):
+            out.append(f"{s['n_validation_hits']} ANE validation hit(s) in captured native output")
     if not out:
         out.append("No contradiction found. This is NOT proof of residency — "
                    "cross-check the GPU idle clock (macmon) during sustained inference.")
