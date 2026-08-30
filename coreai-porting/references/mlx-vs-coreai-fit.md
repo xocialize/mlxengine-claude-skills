@@ -39,11 +39,23 @@ else is engineering ergonomics, not capability. So the question decomposes:
 Reaching for CoreAI *for speed* is usually wrong. Reach for the ANE when the workload is
 **energy-, thermal-, or host-memory-bound** — and accept latency and ~4 dB as the price.
 
-**(a2) A CoreAI process currently dies after ~8,000 inferences.** MEASURED: an uncatchable
-Swift precondition on IOSurface output storage, on **every** compute unit, not fixed by releasing
-outputs or reloading the model (`apple/coreai-torch#75`). MLX has no equivalent ceiling. **For
-any sustained high-rate workload this outranks every energy argument above** — an efficiency win
-is worth nothing if the process cannot stay alive. → `runtime-limits.md`.
+**(a2) A CoreAI process dies after exactly 16,384 output allocations —
+`floor(16384 / num_outputs)` inferences.** MEASURED: an uncatchable Swift precondition on
+IOSurface output storage, on **every** compute unit, not fixed by releasing outputs or reloading
+the model (`apple/coreai-torch#75`). MLX has no equivalent ceiling. **For any sustained
+high-rate workload this outranks every energy argument above** — an efficiency win is worth
+nothing if the process cannot stay alive. → `runtime-limits.md`.
+
+Two consequences specific to the *exact* form of the limit, which the earlier "~8,000
+inferences" phrasing hid:
+
+- **It is computable, therefore schedulable.** A supervisor can recycle a worker at a known
+  fraction of `16384 / n_outputs`. That downgrades this from "disqualifies a service" to
+  "costs a supervisor and a recycle policy" — real, but survivable, and it is the difference
+  between ruling CoreAI out and budgeting for it.
+- **Output count is now an architecture decision with a runtime price.** Four separate heads
+  quarter the process lifetime against one concatenated output sliced host-side. Worth checking
+  at export time, not after a service starts dying in the field.
 
 **(b) Choosing CoreAI does not mean getting the ANE.** MEASURED (deformable conv, decoder
 scale): the "ANE" lane ran **5.5× slower than simply using the GPU** (39 vs 216 inf/s) because
@@ -78,8 +90,9 @@ read what it rejected.
 ### The shape of the answer
 
 ```text
-Will this process do more than ~8,000 inferences without restarting?
-  yes -> MLX, or accept process recycling (coreai-torch#75). This gate comes FIRST.
+Will this process do more than floor(16384 / n_outputs) inferences without restarting?
+  yes -> MLX, or accept a supervisor + recycle policy (coreai-torch#75). This gate comes FIRST.
+         Count the model's OUTPUTS before answering -- they divide the budget.
   no  -> continue:
 
 Does the workload care about energy, heat, or host memory more than latency?

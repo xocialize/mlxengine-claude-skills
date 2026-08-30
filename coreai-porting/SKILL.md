@@ -39,7 +39,8 @@ recipes get A/B'd, not adopted.
 
 ---
 
-> ⚠️ **A CoreAI process dies after ~8,000 inferences** — uncatchable, every compute unit,
+> ⚠️ **A CoreAI process dies after 2^14 = 16,384 output allocations** —
+> `floor(16384 / num_outputs)` inferences. Uncatchable, every compute unit,
 > not fixed by releasing outputs or reloading the model (`apple/coreai-torch#75`).
 > → `references/runtime-limits.md`. This bounds every long-running design.
 
@@ -129,7 +130,7 @@ The same cache is also a diagnostic hazard: **it caches failure-then-fallback**.
 | `references/precision.md` | fp16 parity is bad, or mixed precision won't legalize |
 | `references/compression.md` | Quantization / palettization / pruning via `coreai-opt` |
 | `references/export-recipes.md` | Capture or lowering fails; per-family graph prep |
-| `references/runtime-limits.md` | **Read before designing any long-running process** — the ~8,000-inference hard ceiling |
+| `references/runtime-limits.md` | **Read before designing any long-running process** — the 16,384-output-allocation hard ceiling |
 | `references/known-upstream-defects.md` | **Before every port** — the harvested failure-mode catalogue from `apple/coreai-torch` issues |
 | `references/case-swinir.md` | A retired `blocked` row, and why 0 validation hits does not prove residency |
 | `references/case-scunet-window-attention.md` | Window attention on the ANE — rank-6 from `einops.rearrange`, and a 30× partition penalty |

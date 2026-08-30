@@ -171,6 +171,24 @@ Three traps cost the most time — pre-empt them:
   retain more. Note: the engine's evict path still frees it all — this is a *measurement* correctness fix
   plus a leak-detector, not an admission bug.
 
+- **Under DiT/backbone EVICTION the post-run floor fails for a SECOND, different reason — and it can
+  UNDER-read catastrophically.** The trap above is over-reading (a live graph retaining intermediates).
+  A pipeline that *evicts* its backbone before decode has the opposite failure: post-run, the weights are
+  gone, so `clearCache()` + phys measures only whatever mmap pages the OS happened to retain. Measured on
+  LTX-2.5 (2026-08-14, AB-R-0041): the post-run floor read **11.4 GB at 121f and 2.4 GB at 161f — a ~9 GB
+  swing between adjacent geometries, on BOTH a 40 GB and a 20 GB checkpoint** — while post-load phys moved
+  0.00–0.03 GB. Declaring from it would have put `residentBytes` at 2.34 GB for a 40 GB backbone, a ~17×
+  **under**-declaration the governor would act on (the over-read version is at least conservative).
+  **Two tells, both cheap:** (1) two DIFFERENT-SIZED checkpoints reporting the SAME floor — the same
+  signature as the NAFNet/DDColor case above, so it generalizes across both mechanisms; (2) the floor
+  moving with GEOMETRY while post-load does not. **Always measure the same quantity at two geometries
+  before trusting any floor.**
+  ⚠️ **A harness that PRINTS a recommended declaration is asserting a claim and deserves the same
+  scrutiny as any other number.** LTX's `--mem-bench25` derives its `DECLARE → residentBytes ≈` line from
+  that post-run floor, so it actively recommends the wrong value; the shipping package ignores the line and
+  declares from post-load instead. If you own such a harness, make it emit the post-load floor and a
+  separate post-run `retain=` (the 0.17.0 shape above) rather than one conflated number.
+
 ## App-side counterpart
 
 These are package-author tasks. The **app** has its own seams to make them engage (surface the reserve,

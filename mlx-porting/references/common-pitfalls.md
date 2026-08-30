@@ -1291,3 +1291,138 @@ mx.set_default_device(mx.cpu);  mx.eval(m(sample_input))      # forward on anoth
 Generalizes past rope: **anything precomputed-and-constant that you deliberately kept off the
 parameter tree needs an explicit `mx.eval` at the end of `__init__`** — bias masks, causal masks,
 gather-index tables, codebook lookups, window tables.
+
+## 53. A local `ls` is NOT an availability check, and a repo NAME is not a file name (the LTX dev-checkpoint lesson)
+
+Scoping CFG for the LTX-2.3 Swift port, the conclusion "no MLX conversion of the dev checkpoint
+exists" was reached from two probes that both looked reasonable: (a) listing the local model store
+(only `transformer-distilled.safetensors` present in all three quant dirs), and (b) searching HF for
+a repo whose *name* contained "dev". Both were the wrong probe. The dev transformer is a **file
+inside the repos already in use** — `dgrauet/ltx-2.3-mlx-q8` contains `transformer-dev.safetensors`,
+the distilled LoRA, and two upsamplers nobody had downloaded. The repo is ~93 GB; the local pull was
+~47 GB of it. The wrong conclusion inflated a "download one file" task into a phantom
+Tier-3-conversion + re-hosting project.
+
+- **A partial download is indistinguishable from an unavailable artifact when you only look at the
+  filesystem.** Local stores hold what someone once chose to fetch, not what exists.
+- **Probe the REMOTE file list**: `GET https://huggingface.co/api/models/<org>/<name>?full=true` and
+  read `siblings` — no download needed. For multi-component pipelines, expect variants (dev vs
+  distilled, alternate upsamplers, LoRAs) to be *files in one repo*, not separate repos.
+- Sibling of the PORT-QUEUE availability lesson (a ✅ licence check is not a downloadability check):
+  this is the inverse — a ❌ local-presence check is not an unavailability proof.
+
+## 54. A repo-root licence is evidence about the REPO, not about every artifact the vendor ships — check the binary/desktop distribution's NOTICES before concluding (the LTX-Desktop lesson)
+
+`Lightricks/LTX-2` carries exactly one LICENSE, at the repo root: the LTX-2 Community License, with
+no per-package overrides — so `ltx-core`/`ltx-pipelines` read as Community-licensed *there*. But the
+same inference code ships in the LTX-Desktop release under an Apache-2.0 grant recorded in that
+distribution's `NOTICES.md`. Dual-licensing across distributions is legitimate and common, and it is
+**invisible from the repo**. The failure mode runs both directions: concluding "permissive" from a
+repo that says restrictive (wrong to publish on), or concluding "restricted" from a repo when the
+vendor's own binary distribution grants more (kills a legal port for no reason — this question
+resurfaced twice on the same project before being written down).
+
+- When a licence conclusion is load-bearing, enumerate the vendor's OTHER distributions (desktop
+  app, SDK, pip wheel, model card) and read their NOTICES/licence files; name the exact artifact
+  your conclusion rests on in the port's docs so it is not re-litigated from the repo alone.
+
+## 55. DISTILLED checkpoints carry their guidance baked into the weights — CFG on top double-applies it, and the reference's CFG pipelines load a DIFFERENT checkpoint (the LTX CFG-premise lesson)
+
+"Port CFG" looked like the largest capability gap in the LTX-2.3 Swift port (1–2 weeks, unlocking
+six upstream pipelines). The premise check killed the estimate: **CFG is a dev-model feature.** The
+reference's `--distilled` mode "skips CFG entirely", and its two-stage pipeline requires
+`dev_transformer` + `distilled_lora` — the distilled checkpoint exists precisely because the
+guidance behaviour was distilled INTO the weights. Three consequences for any distilled-model port:
+
+- **Never "just try CFG" on a distilled checkpoint** — it double-applies guidance. If the
+  experiment is ever run anyway, it needs a perceptual gate, not a cosine (the output will be
+  confidently, consistently different).
+- **Check WHICH checkpoint each reference pipeline loads before scoping guidance work.** The cost
+  shape is usually decisive by itself: LTX dev+CFG = 30 steps × 2 forwards = 60, vs the distilled
+  8 — ~7.5× compute (measured extrapolation: ~20+ min/clip where distilled takes ~3 min).
+- Distillation may ship as **dev + LoRA** with the "distilled checkpoint" being the pre-fused
+  artifact (LTX's block-streaming path swaps between the two files at a stage boundary). Knowing
+  this changes what "we have the weights" means — see #53.
+
+## 56. An upstream MEMORY lever's justification is often MATERIALIZED-SCORES arithmetic — on MLX, fused SDPA is flash attention, so measure whether the targeted term even exists before porting the lever (the LTX modality-tiling lesson)
+
+LTX's upstream (and its Python-MLX oracle) ships *modality tiling*: split the DiT token sequence
+into k tiles so "peak attention memory drops by k²", justified with a table — "~10 GB/layer of
+attention scores at 720×1280×97; 1080p 8s+ doesn't fit any current Apple Silicon". Every number in
+that table is `B·H·N²·2` bytes: **it assumes the scores tensor is materialized.** On MLX it is not:
+
+- Measured (`--sdpa-mask-probe`, 3/3): at N=5632, H=32, D=128, bf16, a materialized `[1,H,N,N]`
+  would be 2.03 GB; the call-attributed peak is **0.280 GB** (and stays fused WITH an additive or
+  bool mask — masks cost ~1.75× in *time*, nothing in memory).
+- Measured end-to-end: DiT activation grew **linearly** with tokens (8× tokens → 8× activation;
+  quadratic would have been ~243 GB), and the ported tiler bought **−2.4% peak for +15% wall** at
+  the geometry it was supposed to rescue.
+
+The lever was inherited from CUDA-era assumptions through two ports without anyone re-checking the
+premise on the target platform. Rules:
+
+- **Before porting any activation-memory lever (token tiling, chunked attention, score
+  offloading): measure the term it targets on YOUR stack** — a 10-line probe comparing
+  call-attributed peak vs the materialized-size arithmetic settles it.
+- The O(N²) **compute** wall is untouched by flash attention — long-sequence plans remain
+  time-bound. Do not let the memory correction overcorrect into "long sequences are free".
+- **The general form, three receipts deep (tiling / Gemma-encode / streamed-mux, one LTX port):
+  before valuing ANY memory lever, profile which PHASE sets the run peak at the target geometry.**
+  A lever that shrinks a non-peak phase moves the run peak by zero no matter how real its local
+  savings: modality tiling cut per-forward tokens 4× → −2.4% peak (denoise wasn't the peak below
+  ~65f); the streamed decode→mux seam eliminated the full pixel volume → −0.06 GB peak (assembly
+  sat below denoise). One profiled run with per-phase worst-phys answers it before any code.
+- Measurement trap from the same probe: reset the peak-memory high-water AFTER warmup + cache
+  drain, immediately before the measured call — resetting before warmup makes every arm read a
+  confident `peak+0.000 GB`, including ones that provably allocate.
+
+## 57. Your A/B harness's VERDICT LOGIC needs its own regression tests — extract it pure and encode your past false positives as fixtures (the LTX bench-v2 lesson)
+
+A measurement harness earns trust from protocol (alternation, warmup exclusion, cooldowns), but the
+*verdict function* — the code that turns run records into MEASURABLE/NOISE — is itself a bug
+surface, and its failures look exactly like findings. The LTX harness's v1 verdict printed a clean
+"MEASURABLE +8.5 s" on a **null run** (identical arms): a one-way `nominal→fair` thermal step
+inside block 0 handed one arm the session's only cool runs, ABBA only cancels *symmetric* drift,
+and the sign-flip check is blind to same-sign blocks (receipt
+`ltx-2-mlx-swift/probes/bench_e2e_nullfloor-ssd_20260804`).
+
+The fix pattern (receipts `bench_e2e_v2null_20260805` + `--bench-verdict-selftest`):
+
+- **Extract verdict logic into a pure, GPU-free unit** taking run records and returning verdict
+  strings. If deciding requires re-running generations, you will never test it.
+- **Encode every past false positive as a fixture** — the exact wall-clock sequence that fooled
+  you becomes a permanent regression case ("this input must annotate/NOISE, forever"), plus a
+  clean-difference control that must stay unannotated.
+- Checks that earned their place, each traceable to a receipt: a **session-drift regression**
+  (pooled OLS of wall on global run index, arm-mean-centered so a real arm delta doesn't read as
+  slope; when |fitted span| rivals |Δ|, decide on drift-adjusted residuals and say so), a
+  **within-arm nonstationarity annotation** (per-block medians spanning a large fraction of the
+  decision Δ ⇒ the arms weren't measured in one regime), and **thermal-state stratification**
+  (recompute Δ inside matching states; flag sign disagreement and single-arm strata — the
+  single-arm `nominal` stratum was the smoking gun above).
+- **Detectors make confounds legible; they do not make small deltas trustworthy.** Keep the
+  machine's null-run floor as an operative rule on top of whatever the verdict prints.
+
+## 58. Composing shipped components beyond the upstream's own consumers: the acceptance recipe when no oracle exists for the COMPOSITION (the LTX two-stage-variants lesson)
+
+Upstream shipped three latent-upsampler checkpoints; both the upstream pipelines and the Python-MLX
+oracle hardcode only one of them (x2) into two-stage generation. Wiring the other two (x1.5
+rational, temporal fps-doubling) into two-stage is a *composition with no reference implementation*
+— a common situation when a port targets a platform the authors didn't design for. What made it
+safe (receipt: `--two-stage-variants-gate`, 11/11):
+
+- **Verify the absence first.** Grep the upstream AND the oracle for consumers before concluding
+  the composition is yours to define — "no consumer" is a checkable claim, and finding one changes
+  the job from design to port. Record where you looked.
+- **Pre-flight geometry validation** that throws typed errors BEFORE any heavy phase (a mis-sized
+  request should cost milliseconds, not a stage-1 denoise), with the constraint arithmetic in the
+  error text (÷64 / ÷96 / frames ≡ 1 mod 16).
+- **An inter-stage output contract**: assert the composed module's actual output lands exactly on
+  the geometry the next stage expects — a silent mismatch would run stage 2 at the wrong
+  resolution and produce plausible garbage.
+- **Bit-identity regression on the upstream-covered path**: capture the pre-change output
+  fingerprint (deterministic lanes make mean/std at fixed seed sufficient), and require the
+  refactored code to reproduce it exactly (Δ=0). The new variants get shape + finiteness + a
+  perceptual look; the OLD variant proves the refactor changed nothing.
+- **Label the composition as yours** in docs/comments — the next reader must know there is no
+  upstream behavior to diff against when something looks odd.

@@ -87,6 +87,18 @@ Before an app trusts a package's fresh-machine behavior:
 - **First-launch prewarm is a no-op** — nothing on disk yet; the engine's `WeightPrewarmer` pays
   off from the SECOND cold launch (conforming packages resolve `prewarmPaths` against the store
   layout). Don't chase "prewarm did nothing" on run one.
+- 🚨 **…and prewarm has a CEILING on every later launch too — where the store lives is a
+  correctness concern, not just a speed one.** Prewarm warms the OS page cache; it cannot pin
+  those pages against eviction by the process's own later allocations. MLX weight arrays are
+  **lazy**, so the bytes are pulled inside the first generation's Metal command buffers — if the
+  store is on slow storage (USB/network) and `weight tree + working set > RAM`, those reads fall
+  back to the device mid-command-buffer and trip
+  `kIOGPUCommandBufferCallbackErrorTimeout`. Measured (LTX ISSUES.md I9, 2026-08-03): identical
+  binary/shape, weights on USB 0/7 vs PCI-E 3/3; a run with the cache already hot still died.
+  **Point the store folder-pick at internal or fast external storage, and when a watchdog abort
+  appears only in the largest-working-set configuration, check `diskutil info` on the store
+  volume before suspecting any model component.** See `model-store.md`; package-author side in
+  `mlx-swift-integration` → `references/integration-lessons.md`.
 
 Cross-refs: [model-store.md](model-store.md) (the folder-grant trick), [progress-and-errors.md](progress-and-errors.md)
 (phase → UI mapping). Package-author side (WeightSourcing declaration, the SelfMaterializing

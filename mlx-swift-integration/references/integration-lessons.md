@@ -729,13 +729,38 @@ and cost the first day of diagnosis.
   "Downloading…" phase BEFORE starting run timing; the wrapper's own in-run `ensure()` then finds
   the file warm. Mirror the wrapper's cache-root derivation EXACTLY (engine-stamped store root
   from `useModelStore` → user-caches fallback) or the pre-materialization warms the wrong path.
-- **Watchdog-family datum (one observation, desktop M5 Max, 2026-07-05):** a two-stage
-  Unconstrained q4 run at a tiny shape (384×224×9f) died with
-  `kIOGPUCommandBufferCallbackErrorTimeout` during the GEMMA lazy cold load
+- ~~**Watchdog-family datum (one observation, desktop M5 Max, 2026-07-05)**~~ ✅ **DIAGNOSED
+  2026-08-03 — this was weight page-in from a SLOW WEIGHT VOLUME, and `prewarmPaths` has a
+  ceiling.** The original sighting: a two-stage q4 run at a tiny shape (384×224×9f) died with
+  `kIOGPUCommandBufferCallbackErrorTimeout` during the Gemma lazy cold load
   (`GemmaEncoder.load` → `loadWeights` → eval, pread threads active) DESPITE file prewarm having
-  paged all 28.5 GB — first sighting of the watchdog surviving prewarm on the app path. If it
-  recurs: move the Gemma load off the lazy first-generation path, or CPU-stream the weight loads
-  per the porting doctrine.
+  paged all 28.5 GB. Root-caused in LTX ISSUES.md **I9** after it recurred and blocked every CLI
+  e2e bench:
+  - **Mechanism.** MLX safetensors arrays are **lazy** — `load` only maps them (a 35.4 GB
+    checkpoint "loads" in 1.4 s), so the bytes are actually pulled **inside the first
+    generation's Metal command buffers**. If the weight tree sits on slow storage (here a **USB**
+    volume, ~250–475 MB/s) and the process working set grows past what still lets the OS serve
+    those reads from page cache, the reads fall back to the device *while a command buffer is
+    live* and the fault stall trips the watchdog.
+  - 🔑 **Prewarm cannot fix this, and that is the generalizable correction.** Prewarm only warms
+    the **OS page cache**; it cannot pin those pages against eviction by the process's own later
+    allocations. A run with the cache **hot** (prewarm 5.9 s) still died. **On any box where
+    `weight tree + working set > RAM`, `prewarmPaths` buys the first few GB and nothing more.**
+  - **Only the largest-working-set arm fails**, which is why it masquerades as a quant/component
+    bug: at 704×512×121f bf16 (66 GB working set) crashed 0/7 across three sessions while int8
+    (35 GB) and int4 (26 GB) passed on the same volume, same binary, same session.
+  - **Discriminator, in order:** (1) `diskutil info $(df --output=source <weights> | tail -1)` —
+    check `Protocol:`; (2) restage the tree on internal/PCI-E storage and re-run the identical
+    arm (this alone flipped 0/7 → 3/3); (3) only then suspect the component the profiler blamed.
+  - ⚠️ **Localization ≠ cause.** A profiler pointed at `encode/connector`, and an int8-connector
+    default correlated 4/4 — both were amplifiers, not causes: that init materializes every packed
+    weight in ONE `eval`, i.e. the largest fault-exposed command buffer in the run. The exonerating
+    A/B is the storage swap with everything else held fixed.
+  - **App paths often dodge it** because the engine governor keeps the working set lower and
+    orders allocation differently — so "works in the app, dies in the bare CLI gate" is a
+    *symptom of this*, not evidence against it.
+  - **Durable fix beyond fast storage** (open, engine-side): materialize weights OUTSIDE live
+    command buffers, so slow storage degrades to *slow* rather than *fatal*.
 
 ## Sandboxed area-app harness: headless validation runners (IndexTTS2 Stage 2, 2026-07-09)
 
@@ -1395,3 +1420,110 @@ Two design points worth reusing:
   largest blob — that is what a consumer gets.
 - **Round-trip every publish.** Download the artifact fresh and re-run S0 + the e2e gate against it.
   Cheap, and it catches an upload that silently differs from what was gated.
+
+## Platform-mismatched CPU code accumulates where you DIVERGE from the oracle without a parity reason (LTX FrameCodec, 2026-08-04)
+
+The mirror-the-oracle discipline is a *correctness* rule, and it has a performance corollary nobody
+had stated: **the places you write Swift with no oracle counterpart are exactly where CPU-shaped
+code creeps in unexamined** — because no parity gate ever looks there, and C-family instinct
+produces per-element loops that are natural on CPU and wrong on unified memory with an idle GPU.
+
+- **The receipt:** LTX's `FrameCodec` repacked RGB→BGRA with a per-pixel scalar CPU loop — one
+  pixel at a time, per frame, after a per-frame device→host copy: **~43.6 M scalar iterations at
+  704×512×121f.** The Python oracle has no such loop (one bulk `memoryview` copy); this was our own
+  Swift. Doing the channel reverse + alpha on-device (`MLX.take` + `concatenated`) and
+  bulk-`memcpy`ing: **3.5 s → 0.2 s (~15×), byte-identical** (`--frame-codec-gate` recomputes the
+  old path and asserts equality — the right gate for a pure refactor; an encode round-trip is lossy
+  and proves less).
+- **The audit heuristic that found it (and four siblings):** diff your port against the oracle
+  specifically for *serial constructs with no oracle counterpart* — per-pixel image ingest loops,
+  host-side index-table builders, scalar filterbank construction. Where you mirrored the oracle,
+  serialization is usually deliberate (watchdog/eval discipline, bit-exactness); where you
+  diverged, it is usually accident.
+- **Second half of the lesson: measure before executing the PLANNED fix.** The backlog had this
+  scoped as IOSurface-backed `VTCompressionSession` (days of work) under "zero-copy handoff".
+  Measuring first showed the cost was the scalar loop, not the copy — the ~2 h on-device fix
+  captured ~15× and the residual (121 device→host copies) is worth ≤1.7 ms/frame, correctly left
+  for the streaming-decode work it belongs to. A stale backlog entry can encode the wrong
+  diagnosis; the receipt, not the plan, decides what gets built.
+- Cross-refs: the distilled-checkpoint/CFG premise trap and the flash-SDPA memory-lever premise
+  trap live in `mlx-porting` `common-pitfalls.md` #55/#56 — both are reading-time checks that
+  killed weeks of misdirected work on the same project.
+
+## Two Swift-6 seam lessons from the streamed decode→mux port (LTX #8, 2026-08-05)
+
+- **A class that synchronous sink closures must call cannot be actor-bound.** `MP4StreamWriter`
+  started `@InferenceActor`; the pipeline drives it through plain `(MLXArray) throws -> Void`
+  sink closures, and actor-isolated methods are uncallable from those even though they *execute*
+  on the same actor — the closure's TYPE carries no isolation. Fleet idiom that resolves it:
+  plain `final class` + `@unchecked Sendable`, documented single-context use.
+- **Do not thread async through a synchronous GPU loop just because the consumer has awaits.**
+  Making the VAE chunk sink `async` cascaded `sending`/region-isolation errors through every hop
+  for zero benefit — the decode loop is seconds of blocking GPU work per chunk, and encoder
+  back-pressure at chunk cadence is effectively never hit. A synchronous `appendSync` with a
+  bounded usleep poll (same 90 s loud-error guard) matches the codebase's sync-heavy reality and
+  dissolved the whole knot. Generalizes: match the async-ness of a seam to the LOOP that drives
+  it, not to the callee's internals.
+
+## AVAssetWriter/VideoToolbox H.264: deterministic per input+batching, but rate control responds to append BATCHING — and MP4 md5 never reproduces (LTX mux-bench, 2026-08-05)
+
+Measured while gating a materialized-vs-streamed decode→mux seam (`ltx-2-mlx-swift`
+`--vae-mux-bench`, 1024×576 noise content — codec worst case):
+
+- **Whole-file MP4 md5 differs between IDENTICAL invocations of the same code** — the container
+  embeds creation timestamps. Never use file md5 as an output fingerprint for AVAssetWriter
+  products; hash the pixels you FEED the writer instead (per-frame, in append order).
+- **The encoder is bit-deterministic for identical input + identical append pattern**: two runs
+  of the same lane decode to max|Δ|=0.
+- **But rate control responds to append batching**: one big `appendSync` of all frames vs
+  per-chunk appends (with GPU decode gaps between) produced decoded outputs at SSIM 0.96 /
+  33 dB on noise — with per-frame float digests of the encoder input PROVING the pixels were
+  bit-identical. Same pixels in, different QP schedule out. Deterministic per pattern, divergent
+  across patterns; software encoder behaves the same.
+- Consequence: two mux lanes can only be equivalence-gated at the **encoder input** (pixel
+  digest), never at the MP4 or its decoded frames. Quality deltas from batching are codec-normal
+  variation, largest on noise-like content.
+
+## A SYMLINKED repo dir in the model store reads as EMPTY — probe and loader both fail, differently (lfm-embedding, 2026-08-05)
+
+Staging a dev store by symlinking an existing download into the MS-1 name
+(`ln -s mlx-community/<name> models--mlx-community--<name>`) fails twice, with unrelated-looking
+symptoms, because `FileManager.enumerator(at:)` does **not descend a symlinked root** (it yields
+nothing; `Data(contentsOf:)`/`contentsOfDirectory` DO resolve symlinks, which is what makes the
+failure partial and confusing):
+
+- **MS-2 probe** (`WeightSourceProbe.relativeFiles`): sees zero files → source reads *missing* →
+  a spurious full re-download (which lands *through* the symlink into the target — harmless but
+  masks the cause: afterwards the store "has" the weights and the next symptom still fires).
+- **`loadWeights`** (MLXEmbedders/MLXLMCommon): config.json loads fine (direct read resolves the
+  link, so the model BUILDS), then the weights dict comes up empty and `update(parameters:)`
+  throws `MLXNN.UpdateError.keyNotFound` on a **random first key** (dict order) — looks like a
+  key-remap/sanitize bug, is actually "no tensors were enumerated".
+
+The engine's materializer always creates real directories, so production never hits this — it is
+a dev-workflow trap only. Stage a store layout from an existing download with an APFS clone
+instead: `cp -Rc <nested-dir> models--<org>--<name>` (instant, CoW), and delete any
+`.cache/huggingface` bookkeeping the hf CLI left inside. Diagnostic tell: keyNotFound whose
+missing key EXISTS in the safetensors header + a store path involving a symlink ⇒ this, not a
+sanitize bug.
+
+## A silent backend fallback that changes RESOURCE CLASS is a leak/OOM factory — external case study (LTX-Desktop MPS, 2026-08-06)
+
+Vendor case (their own internal doc, torch-MPS stack — not ours): the `mps-sdpa` attention shim's
+zero-copy backend silently failed to build (ninja binary not on PATH — the Python *package* was
+installed) and fell back to a pyobjc backend that allocates a fresh MTLBuffer per attention call
+→ unbounded, sequence-length-dependent driver-memory growth → a 48 GB Mac couldn't finish 121
+frames, and it presented as a backend crash, not as a fallback. Rules our stack already encodes,
+now with external validation:
+
+- **A fallback may be output-invisible, but it must never be resource-class-invisible.** If the
+  fallback path has different memory/time behavior, it must announce itself (our streaming gate
+  logs its resident fallback; the pruna decoder env fallback prints a note — "check the log
+  before trusting an A/B").
+- **Runtime-JIT native extensions are a deployment trap on macOS** (toolchain, PATH, codesign,
+  hardened runtime). MLX-Swift sidesteps the entire class — but the same trap lives in any
+  "compiles a Metal kernel on first use" dependency; know which of your deps JIT.
+- Leak triage signal worth stealing: **allocator-level vs framework-level growth** (their
+  `driver_allocated_memory` climbed while live-tensor memory stayed flat → below-Python
+  retention). Our equivalent split is MLX active vs cache vs phys footprint — the bench already
+  records all three per run, and the post-drop floor per block is the leak detector.

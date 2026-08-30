@@ -77,6 +77,19 @@ Before writing any MLX code, read the PyTorch source skeptically for these traps
 
 - [ ] **Diff against already-ported bases FIRST** — before scoping a Tier-3 port, diff the candidate's weight-key set (from the safetensors `*.index.json` — no download) and `config.json` against bases already in MLX (Wan, LTX, Lance, Qwen, SD3/FLUX). A fine-tune/wrapper of a ported base collapses to "reuse the base + port only the delta." Config knobs that name no new tensors are runtime params, not layers. This turned `bernini-r-mlx` from weeks to days. **Every format's keys are readable without downloading:** sharded → `*.index.json`; single-file safetensors → first 8 bytes are the header length, then range-request the header; **torch `.pth` → it is a ZIP, so read the (ZIP64) central directory, pull `data.pkl` alone, and walk it with `pickletools.genops` — 130 KB of a 33 GB file, nothing unpickled.** 🚨 **But diff against an upstream ORIGINAL and carry a control arm on a checkpoint whose keys you already know: a QUANTIZED file's shapes are PACKED** (MLX 8-bit = logical ÷ 4), and the packed number is always plausible, so it yields a confident wrong architecture — that is how a nonexistent config field got written for SeedVR2's 7B. (#12/#13, #48)
 - [ ] 🚨 **Check whether your REFERENCE implementation has the same scope as your TARGET** — a port can take the *model* from one upstream and the *implementation* from another, and the second one's shortcuts travel silently. `mlx-seedvr2-swift` ports ByteDance's **video** SR model but traced its MLX code against **mflux, which is image-only**; mflux gates the causal `remove_head` on `T == 1` (its only case), so the decoder emitted 4×latT frames at T>1 — correct at T=1, silently wrong beyond it, and invisible for a year because the driver only ever asked for T=1 either. Record both provenances, grep the reference for guards on the dimension you intend to exercise (`if T == 1`, `B == 1`, `frames=1`), and assert a round trip on that dimension even before your driver uses it. When generalising an inherited shortcut, keep the old expression verbatim on the old branch so the shipping path is bit-identical by construction. (#49)
+- [ ] **Availability = the REMOTE file list, never a local `ls` or a repo-name search** — variants
+  (dev vs distilled, upsamplers, LoRAs) are usually FILES inside a repo you already use, and a
+  partial local download is indistinguishable from an unavailable artifact. `GET
+  /api/models/<org>/<name>?full=true` → `siblings`. And for distilled models: **the reference's CFG
+  pipelines load a different checkpoint than the distilled one, and CFG on distilled weights
+  double-applies guidance** — check which file each pipeline loads before scoping guidance work.
+  (#53, #55)
+- [ ] 🚨 **Premise-check any upstream MEMORY lever against MLX's flash SDPA before porting it** —
+  upstream justifications for token tiling / chunked attention / score offloading are routinely
+  `B·H·N²` *materialized-scores* arithmetic inherited from CUDA-era code; on MLX the fused kernel
+  never allocates that tensor (measured: 0.28 GB attributed at N=5632 vs 2.03 GB materialized), so
+  the lever can cost wall-clock while buying ~nothing. A 10-line attributed-peak probe settles it.
+  The O(N²) *compute* wall still stands. (#56)
 - [ ] **Constructor defaults** — every `__init__` default verified against `config.json` (`include_pi=True` when config says `false`, `groupnorm_eps=1e-5` when config says `1e-6`) silently ruins outputs.
 - [ ] **`attention_head_dim` misnomer** — in diffusers UNets `attention_head_dim=[5,10,20,20]` means `num_heads`, NOT per-head dim. Real head_dim = `channels // attention_head_dim`.
 - [ ] **QKV reshape pattern** — `qkv = cat([q,k,v]) → view(B,N,heads,3*hd) → split` means heads are **interleaved**, not stacked. Replicate EXACTLY.
@@ -198,6 +211,62 @@ A finished port has **two** homes — sending code to the weights host or weight
 
 - **Weights → Hugging Face `mlx-community`.** Single-stack LLM/VLM/audio (Tier 1/2) → `mlx-community/<UpstreamRepoName>-<quant>` using the quant-suffix grammar (`-4bit`/`-bf16`/`-mxfp4`/… — full grammar in `references/mlx-community-conventions.md`), preserving upstream casing. `--upload-repo` does it; hand-uploads (bf16 audio, learned quants) match the same naming. **HF weight-repo naming never carries an `-mlx` suffix** (that's for GitHub code repos); applies to WIP personal-namespace repos too, so graduation to mlx-community is a move, not a rename. Tier-3 pipelines with no clean single-`model_type` slot host split weights in the `-mlx` repo (documented exception).
 - **Code → GitHub `xocialize`.** Python `-mlx` port + its Swift consumer both under `github.com/xocialize/<package>-mlx`. The Swift package references the `mlx-community` weights via `from_pretrained`; it doesn't re-host weights unless Tier-3.
+
+**🚨 WEIGHT DURABILITY RULE (fleet policy, user-set 2026-08-03): every byte a shipped package
+downloads must live in a repo WE control.** Weights that go to `mlx-community` / `coreai-community` /
+another common org we publish into are durable — done. **Anything else — especially multi-component
+pipelines whose components you're tempted to REFERENCE from the upstream author's repo — gets
+re-hosted at `xocialize` (or the org repo we own) as part of the publish step, not later.** The
+licence permitting redistribution is the gate; when it permits, re-host by default.
+
+Why this is a rule and not a courtesy call: microsoft RELOCATED the entire Mage-Flow family
+(`microsoft/*` → `mage-flow-community/*`, still MIT) AFTER we published ports whose `WeightSource`s
+referenced the old namespace — **and the old URLs return 401 with NO redirect**, so every fresh
+consumer of six published packages broke overnight exactly as a withdrawal would have. 🔑 That is
+the sharper lesson: you are exposed not just to takedowns but to BENIGN re-orgs, renames, and org
+migrations, none of which you get notified about. Only a lucky complete local cache made same-day
+re-hosting possible. Pre-shipping that was a scramble; with a product on market it is an outage.
+Corollaries:
+
+**Mirroring mechanics — four traps, each hit for real (2026-08-03, three families mirrored):**
+1. **`x-linked-etag` carries TWO hash kinds.** sha256 for LFS-backed files; the **git blob SHA-1**
+   for plain ones (configs, tokenizer JSON). Branch on digest length (64 vs 40 hex) or every small
+   file reads as corrupt.
+2. **Verify BOTH directions — extra files, not just mismatched ones.** Staging from our own model
+   store swept an engine-written `mlx-package.json` into two published mirrors; only a
+   set-difference against upstream caught it. **Never stage a mirror from a directory the engine
+   has written to.**
+3. **Repo id ⇒ store directory** (`models--<org>--<name>`), so repointing orphans existing local
+   downloads. `mv` the store dir to the new name — `.cache/huggingface` metadata holds only
+   commit+file hashes, no repo id.
+4. **Check the latest tag before cutting one.** A patch tag below the current release has to be
+   deleted locally AND remotely.
+
+🔑 **Split the fetch address from provenance, and TEST the split.** `Provenance.sourceRepo` names
+where the weights ORIGINATE; the configuration names where they are FETCHED. Both are plausible
+`org/name` strings, so feeding the mirror into provenance is invisible in review — it shipped once
+before a test caught it. Give the model type an `upstreamRepo` beside `weightsRepo` and assert, for
+every variant, that the fetch prefix is ours, the origin prefix is theirs, and the trailing
+checkpoint name is identical.
+
+⚠️ **A repo-root licence is evidence about the repo, not about every artifact the vendor ships.**
+The same inference code can be Community-licensed in the GitHub monorepo and Apache-2.0 in the
+vendor's desktop distribution's `NOTICES.md` (Lightricks/LTX-2 is exactly this). When a licence
+conclusion is load-bearing, enumerate the vendor's other distributions and name the exact artifact
+the conclusion rests on — otherwise the question gets re-litigated from the repo forever. (#54)
+
+⚠️ **Read the licence before assuming you may not mirror.** Two "restrictive" licences encountered
+here — LTX-2 Community (§3) and LFM Open v1.0 (§4) — both **expressly permit redistribution** with
+conditions (propagate terms, ship a complete copy, mark modifications, retain attribution). One of
+our own docs had recorded "NOT published (Community-licensed)", which read as a legal bar and would
+have blocked the mirror; it had conflated *we don't commit weights to git* with *we may not host
+them*. ⚠️ Both also carry **revenue thresholds** ($10M) — surface that on the model card, since a
+mirror puts the weights in front of people who never read the original card.
+- A `WeightSource`/`from_pretrained` repo string pointing at a third party's namespace in a SHIPPED
+  package is a production dependency on someone else's retention policy. Audit for these at publish.
+- Keep the licence text that came WITH the copy (it governs the re-host even if upstream relicenses).
+- Re-hosting etiquette: our model card, provenance + original licence stated, upstream credited —
+  never clobber our README with the upstream card on upload (`--exclude "README.md"`).
 
 **Group quant variants in a Collection.** When a model ships >1 quant, gather them into an `mlx-community` HF Collection so they're one discoverable family. Mechanics in `references/mlx-community-conventions.md` ("Quant collections").
 

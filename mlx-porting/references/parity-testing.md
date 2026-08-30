@@ -533,3 +533,27 @@ And the reason it was caught at all: an end-to-end sweep in the consuming app sh
 regression. Chasing that surfaced a *correctness* bug the dedicated correctness gates had missed.
 Broad, coarse, end-to-end measurement finds things targeted gates are pointed away from — keep
 both.
+
+## Fixture oracles must load weights through the SHIPPED dtype grid (2026-08-18, bernini-v2 planner)
+
+Two failure signatures from one root cause, both worth pattern-matching:
+
+1. **Two INDEPENDENT modules failing with the same ~1% relative-error class** (a 7.7B backbone
+   at max_abs 15.9 on its ~1.5k-magnitude outlier channels ≈ 1%; a small flow-match head at
+   0.18 on ±20 outputs ≈ 1%) is the tell that the divergence is in the WEIGHTS, not the math:
+   the oracle had loaded fp32 masters while the port loads the published bf16 checkpoint
+   (±0.4%/weight). Fix: the fixture generator must round weights through the shipped grid
+   (`t.to(torch.bfloat16).to(compute_dtype)`) — gate the bytes you ship. After that, a correct
+   port collapses to reduction-order noise (the backbone landed at exactly one bf16 ulp).
+
+2. **torch computes SCHEDULE tensors in the schedule's dtype, and derived values inherit its
+   rounding**: `timesteps = sigmas * 1000` with bf16 sigmas yields bf16 timesteps — 800.78
+   becomes 800.0 (bf16 ulp at that range is 4), and a sinusoidal timestep embedding amplifies
+   the difference to ~1% of output. Likewise the euler delta `(σ_next − σ)` is bf16-rounded.
+   Don't re-derive schedule values from injected sigmas in fp32 — inject BOTH sigmas and
+   timesteps as fixtures, and round derived deltas through the schedule grid
+   (`.asType(.bfloat16).asType(.float32)`).
+
+Isolation that found it in one pass each: a tap-depth sweep (26/27/28 layers) for the
+hidden-state tap, then single-forward probes (net alone → CFG combine → full sample loop) to
+corner the schedule. Fixtures per stage make each hypothesis a one-run test.

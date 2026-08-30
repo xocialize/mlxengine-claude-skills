@@ -278,3 +278,12 @@ Two patterns proven by the first non-MLX engine package (`CoreAIRealESRGAN`, GAP
    `(MLXServeEngine) async throws -> PackageID`), runs them in `registerAll()` beside built-ins,
    and surfaces outcomes under the same honesty rules. The APP's deployment target decides what to
    inject; below the floor, nothing is injected and the incumbent backend serves the capability.
+
+## Weight durability at the WeightSourcing seam (fleet policy, 2026-08-03)
+
+Every `WeightSource.repo` in a shipped package must point at a namespace WE control
+(`mlx-community`/`coreai-community` where published there, else `xocialize`). Referencing an
+upstream author's repo is a production dependency on their retention policy — the Mage-Flow family
+was withdrawn upstream after our ports shipped referencing it, breaking fresh consumers of six
+packages overnight. When the licence permits redistribution, re-host as part of the publish step;
+audit every `WeightSource`/snapshot string for third-party namespaces before tagging.

@@ -627,3 +627,208 @@ resolved to the new tag, i.e. SPM picks the highest in range correctly once the 
 Bumping `minimumVersion` to the fix tag remains good hygiene for a different reason — a floor left
 at an old version lets any consumer legitimately keep serving it — but do not mistake it for the
 cure. Confirm the real thing with `git -C <DerivedData>/SourcePackages/checkouts/<pkg> describe --tags`.
+
+## LTX Studio (2026-08-22): app-side `RunProgress.$sink` binding never fires at engine ≥ 0.48 — observe the engine-owned monitors instead
+
+**Symptom.** A consumer wraps `engine.run(...)` in `RunProgress.$sink.withValue(onProgress) { ... }`
+(the pattern older QuickStart scaffolds documented) and the closure never fires — no run-phase
+events, a dead stepper — while the run itself completes fine.
+
+**Why.** Since the engine took ownership of run-progress (v2 signal / preemption), `MLXServeEngine`
+executes the package inside its **own unstructured `Task`** and binds its **own** sink around
+`instance.run(request)` (MLXServeEngine.swift run wrapper: `let task = Task { ... RunProgress.$sink
+.withValue(sink) { try await instance.run(request) } }`). A fresh unstructured Task does not inherit
+the caller's task-locals, and even if it did, the engine's inner binding shadows any outer one. An
+app-side `withValue` around `engine.run` is therefore structurally unreachable — not flaky, DEAD.
+
+**The correct consumer pattern** (mirrors `ModelStateView`/`PreparationMonitor`):
+
+```swift
+// nonisolated lets on the engine — no await needed to grab them:
+let prep = engine.preparation      // PreparationMonitor (@MainActor @Observable)
+let run  = engine.runProgress      // RunMonitor        (@MainActor @Observable)
+// SwiftUI: read run.report(for: .textToVideo) in body; nil == no run in flight.
+// The engine clears the entry on EVERY exit (return/throw/cancel).
+```
+
+Correlate reports to stepper nodes per the package's plan (`plannedStages(...)` for LTX): match
+`report.phase.rawValue` to the node's `phase`, disambiguate repeated phases (two-stage `denoise`)
+with `report.stage` vs the node's `occurrence`, and keep the index MONOTONIC — the monitor exposes
+only the latest report, so a view that recomputes naively can step backwards on repeated phases.
+
+**Recognize it fast:** progress closure never called + run completes + `engine.runProgress` updates
+in the debugger → you are on the dead pattern. Fix is a deletion, not a workaround: drop the
+`withValue`, bind the monitors.
+
+## LTX Studio (2026-08-22): SwiftUI `VideoPlayer` SIGABRTs on macOS 27.0 beta — wrap AppKit `AVPlayerView` instead
+
+**Symptom.** The app aborts (SIGABRT, `abort() called`) the instant a result view containing
+SwiftUI's `VideoPlayer` enters the hierarchy. Crash stack: `swift::fatalError` →
+`getSuperclassMetadata` → `_swift_initClassMetadataImpl` → `_AVKit_SwiftUI
+__swift_instantiateGenericMetadata` → `NSViewRepresentable._makeView`. Observed on macOS 27.0
+beta 26A5416b (SwiftUI 8.0.84.1.406) at the worst possible moment: the first successfully
+finished generation flipping the UI to its player card — 15 minutes of compute presented, then
+abort (incident 2EFD86F5, 16:24:26).
+
+**Why.** The Swift runtime fails to realize `_AVKit_SwiftUI`'s generic class metadata (superclass
+demangle fails) on this OS/SDK pairing. Not app logic, not Metal API validation (the launch was
+via `open`, where scheme-level Metal validation isn't even active), and nothing MLX — the engine
+side had already returned and the file was safely stored.
+
+**Fix (drop-in).** Avoid `_AVKit_SwiftUI` entirely — a 20-line `NSViewRepresentable` over AppKit's
+`AVPlayerView` (`view.player = player`, `controlsStyle = .inline`) renders and plays the same MP4s
+fine. Revisit `VideoPlayer` only after an OS/SDK move.
+
+**Recognize it fast:** SIGABRT with `_AVKit_SwiftUI` + `getSuperclassMetadata` in the first 8
+frames, fired on the first appearance of a video result view. The generation pipeline is
+innocent — check the log for the `Generation done` line landing right before the crash.
+
+## LTX Studio P2 sprint (2026-08-22/23): three supply-chain & verification gotchas
+
+**1. Branch pins do not advance on resolve — edit the resolved revision directly.** A package
+pinned to a BRANCH (`ltx-2-mlx-swift@main`) keeps its `Package.resolved` revision through every
+`-resolvePackageDependencies`; work landed on the branch after your first resolve (here: the
+LoRA `clearedFamilies` stamps) silently never arrives. The version-pin force-order (mirrors →
+manifests cache) is the wrong tool — for a branch pin just write the new head SHA into
+`Package.resolved`'s `state.revision` (get it from `git ls-remote <url> <branch>`) and resolve;
+Xcode honors the edited revision. Distinct mechanism from the stale-TAG cache entry above.
+
+**2. Terminal is TCC-blind to app containers — and it fails EMPTY, not loud.** `ls` on
+`~/Library/Containers/<bundle-id>/Data/...` returns "Operation not permitted" — but piped through
+`2>/dev/null | wc -l` it reads as an empty directory, and even bare `ls` output can mislead a
+quick scan. Meanwhile a direct `stat <exact-file-path>` often succeeds. So: verify container
+files by exact-path `stat`, never by directory listing; an id from the app's own log lines
+(file names carry them) gives you the path. A "0 files" readout from Terminal is NOT evidence
+of absence.
+
+**3. Smoke fixtures must live under an existing sandbox grant.** A launch-argument file path
+(`-SmokeImage /tmp/...`) silently no-ops in a sandboxed app — `NSImage(contentsOf:)` returns nil,
+no prompt, no error dialog. Stage fixtures inside a folder the app already holds a
+security-scoped grant on (the MODEL STORE is ideal: `<store>/_smoke/…`) and pass that path.
+Corollary for thumbnails/detached work under Swift 6 default-MainActor isolation: hand Sendable
+bytes (`Data`) across the task boundary and build `NSImage` main-actor-side.
+
+## LTX Studio (2026-08-23): an upstream HF org migration breaks hardcoded WeightSource repos — diagnose by anonymous probe, unblock by hand-stage, fix in the package
+
+**Symptom.** `engine.prepare(...)` on a fresh store fails with
+`MLXHubMetadata.HubMetadataError error 0` (= `.httpStatus`) at the LISTING stage — before any
+bytes move. Adding a verified HF token does NOT fix it.
+
+**Cause.** The model's owner migrated the repo to a new org (here: `microsoft/Mage-Flow-*` →
+`mage-flow-community/*`) and HF serves the old path a 401 **even authenticated** — no
+API-level redirect for tree listings. A package with a hardcoded `WeightSource` repo string
+is dead on fresh stores from that moment, silently, with an error that *looks* like an auth
+problem. Tokens are a red herring: probe the suspect repo anonymously
+(`curl …/api/models/<repo>/tree/main`) and probe the rumored new home — a 401-old / 200-new
+pair is a migration, not gating.
+
+**Triage order that worked:**
+1. Probe old + new paths anonymously (curl, no token) — classifies gating vs migration in
+   seconds and tells you whether the fix ADDS or REMOVES an auth requirement.
+2. **Interim unblock, consumer-side, zero package changes:** hand-stage the needed files FROM
+   THE NEW org INTO the store directory named for the DECLARED (old) repo
+   (`models--<old-org>--<name>`), matching the config's globs, size-verified. The package's
+   presence check short-circuits the listing entirely — the dead path is never consulted.
+   This is the skill's hand-staged-store pattern applied as a shim.
+3. **Durable fix belongs in the PACKAGE** (one-line repo constant + provenance rows +
+   registry note), shipped with a migrate-by-RENAME instruction: after the bump the engine
+   looks for `models--<new-org>--<name>`, and a rename of the store dir carries every byte —
+   including your interim hand-stage — with no re-download.
+
+**Adjacent trap from the same session:** engine-management panels aside, remember the app's
+own smoke/probes may cache the OLD org name in fixtures or scripts — grep for the org string
+once the bump lands.
+
+## LTX Studio (2026-08-23): consumer-side verification of a generative surface — TCC-blind outputs, and the full-span control that separates "prompt ignored" from "prompt overpowered"
+
+**Context:** first consumption of the port's `.videoEdit` (retake/extend). Operator reported
+zero visible effect from retake prompts across multiple runs; app-side wiring (ask → request
+prompt field) verified clean, so the question became which side owned the failure — and the
+receipts had to be *frames*, not logs.
+
+**Gotcha 1 — the harness cannot read the app's own outputs.** Sandboxed-app outputs live in
+the app container, and macOS TCC blocks other processes (your shell, ffmpeg, even `cp` by
+exact path) from reading another app's container: `Operation not permitted` with no prompt in
+headless flows. Don't weaken TCC and don't bounce files through the user. **Pattern:** the
+app already holds a security-scoped grant on its model-store folder — add a smoke launch arg
+(`-…ExportOutputs`) that has the APP copy its library files into `<store>/_smoke/exports/`.
+The harness reads them freely from there. Same trick as input fixtures (`_smoke/…` for i2v
+images), run in reverse.
+
+**Gotcha 2 — "the edit did nothing" has three different causes; one cheap probe splits them.**
+Frame-grid the base vs. edited outputs at fixed timestamps (ffmpeg extract + hstack/vstack,
+then LOOK at the grid). Near-identical frames with slight drift = the span re-denoised but the
+prompt exerted no force — still ambiguous between (a) prompt embeds unused (hard bug) and
+(b) context inertia (few-step distilled denoise + hard-frozen clean neighbors re-blended each
+step leaves the prompt no room to introduce content). **The control that decides it: run the
+same edit full-span** (start 0, duration = clip length) so nothing is frozen. Prompt obeyed →
+conditioning path healthy, failure is context dominance (a tuning ask: more steps/CFG on
+spans, soft-context anneal, feather). Prompt still ignored → hard bug in the prompt path.
+Report whichever verdict with the grid + control receipts; that's a one-round ask instead of a
+speculation thread.
+
+**Timing corollary:** masked-span edits denoise the FULL clip geometry every time — cost is
+geometry-driven, not span-driven. Don't infer per-span pricing from one noisy run; A/B it
+(full-span ≈ short-span confirmed it here).
+
+## LTX Studio P3 (2026-08-24): adding a REMOTE backend beside the engine — three live-wire lessons
+
+**Context:** wiring the LTX cloud API as a second backend behind the same UI that drives
+MLXEngine locally. The reference consumer (vendor's Electron app) shipped working code, and
+its spec tables STILL didn't describe the wire.
+
+**1. The shipping app's spec layer is not the wire — verify with one live call per path.**
+The vendor app's capability tables list resolution rungs ("720p"); its handler silently
+translates them to pixel strings ("1280x720") before POSTing, and the live API 400s on the
+rung names. Same shape again for audio: nothing in the app says raw PCM is rejected — the
+live 400 enumerates the accepted codecs (aac/mp3/vorbis/opus/flac). **Pattern:** transcribe
+the reference client's payload-building code (not its spec/validation layer), then fire ONE
+minimal live probe per endpoint before building UI on top. Budget for the 400s — each one is
+a receipt; pin the request id in a ⚠️ comment.
+
+**2. Same-probe-on-both-lanes classifies "defect" vs "family trait".** A capability that
+disappoints locally (weak in-span prompt insertion on retake) earns a port bug report ONLY if
+the reference service does better. Running the identical probe (same source, span, prompt)
+against the cloud tier answered it: fails there too → family-wide trait, reframe the UI copy,
+spare the port a doomed parity chase. Bonus: the comparison surfaced the REVERSE
+differentiator (cloud retake re-renders the whole clip at a new resolution; the local masked
+span-replace is the only geometry-preserving edit path) — worth a receipt to the port team.
+
+**3. Absence-of-capability receipts need a cheap objective probe.** "Does the API honor a
+seed?" = two identical requests + PSNR on matching frames (9 dB = ignored). "Is there an
+OpenAPI surface?" = four 404s. Ten minutes of probes converted "maybe the API offers more"
+into closed, citable verdicts — and killed a false record-honesty bug before it shipped
+(records must not store a seed the wire ignored).
+
+## LTX Studio (2026-08-25): AV-sync debugging — drift vs constant, the shift-ladder instrument, and the timebase-squeeze bug class
+
+**Context:** local audio-conditioned generation (a2v) read as "lip sync off" while the cloud
+lane with identical audio was tight. Resolved to operator-synced in one day, entirely with
+consumer-side instruments.
+
+**1. The perceptual shift ladder is a real measurement instrument.** Copies of the clip with
+only audio timing shifted (±100/200/300 ms; then a finer ±50–200 rung set) — the operator
+picks the best. It measured a ~200 ms offset, then its own falsification: "hard to choose,
+aligns differently as the track progresses" = **drift, not constant** — the observation that
+cracked the case. The port meanwhile tried an objective estimator (motion-energy × audio
+envelope cross-correlation) and it FAILED validation against the ladder's known steps
+(r ≤ 0.09) — talking heads carry too much non-mouth motion. Validate any instrument against
+known shifts before trusting it; a disciplined perceptual ladder beats an unvalidated metric.
+
+**2. The timebase-squeeze bug class.** If the conditioning span is derived from the MEDIA's
+duration while generation runs on a quantized FRAME grid (8k+1 here), any off-grid input gets
+its conditioning tokens squeezed → LINEAR sync drift (track 10.2 s onto a 10.04 s grid ≈
+158 ms accumulated), invisible on short/coarse content (claps at 5 s passed) and glaring on
+speech. **Consumer-side fence:** fit the media to the frame grid at ingest — and per the
+operator, PAD UP with silence (never trim supplied content; trimming is only legitimate at
+the hard envelope cap, where a longer track would re-introduce the squeeze at the clamp).
+
+**3. Decompose before filing.** The measured 200 ms was squeeze-drift (~158, fixable at
+ingest) + a vendor-shared +70 ms constant (token-probed identical on both arms — present but
+perceptually marginal once the drift was gone: operator picked UNSHIFTED). Filing "200 ms
+offset" as one bug would have sent the port hunting a number that no single mechanism owns.
+
+**4. Doc-site beats app-internal tables, but the wire is lenient.** The service's official
+docs contradicted the reference app's internal spec tables (duration floor 6 even-stepped vs
+2–20-with-odds) — and the live API silently ACCEPTED out-of-spec values our earlier runs sent.
+Offer the documented envelope in UI; treat past lenience as receipts, not contract.

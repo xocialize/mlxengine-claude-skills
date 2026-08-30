@@ -511,3 +511,28 @@ When writing or updating a recipe, invoke the `mlx-recipe` skill with:
 - Target quantization scope.
 
 That skill owns the full authoring workflow — shape verification, component-by-component parity, end-to-end conversion test.
+
+## Metal watchdog kills one-shot conversion evals (2026-08-18, bernini-v2)
+
+A conversion that keeps the whole checkpoint lazy (mmap-load → rename → cast) and then
+materializes with ONE `mx.eval(*all_tensors)` builds a single Metal command buffer covering
+every cast over the full checkpoint (53 GB fp32 → bf16, 1095 tensors). That buffer outruns the
+~10 s GPU command-buffer watchdog → `mlx::core::gpu::check_error` throws
+`kIOGPUCommandBufferCallbackErrorTimeout` → SIGABRT mid-conversion. The per-tensor-eval style of
+older converters never hit this; the failure appears exactly when you "optimize" for memory by
+deferring all evals.
+
+**Rule: pin conversions to the CPU stream** (`mx.set_default_device(mx.cpu)`) — conversion is
+IO + dtype casts, the CPU stream has no watchdog, and lazy-until-save stays memory-light — and
+still eval in bounded chunks (~32 tensors) rather than one shot. GPU is never needed until a
+*quantized forward* (which must be GPU — the opposite pin; see parity-testing.md).
+
+**The same bug hides in RUNTIME load paths, and prewarming does not save you** (2026-08-18,
+bernini-v2 engine wrap). A Swift `fromPretrained` that does `loadArrays` (lazy mmap) + `asType`
+with no eval leaves the disk reads to the FIRST FORWARD's command buffer — a dd page-cache
+prewarm masks it in single-model CLI gates, then a composed pipeline (53 GB renderer loaded
+first → planner paged in per request) evicts the prewarmed pages and the same watchdog SIGABRT
+fires in production order only. Rule: every multi-GB load path CPU-pins and materializes before
+returning (`Device.withDefaultDevice(.cpu) { loadArrays; cast; chunked eval }` — wan-core
+`WeightLoader.materialize`); audit `materialize` call sites for which default device they run
+under. Treat "works after prewarm" as a masked bug, not a fix.
