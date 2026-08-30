@@ -73,6 +73,24 @@ crash.
 
 ---
 
+## `GuardOnDataDependentSymNode` — grep the graph dump, not the exception
+
+**MEASURED (EoMT, 2026-08-30).** The exception text is useless and `torch.export` even prints
+`Unable to find user code corresponding to {u0}`. But the error **embeds the FX graph dump**, and
+that dump carries `# File: ...:LINE in forward, code: ...` attribution on every node.
+
+```bash
+python repro.py 2>&1 | grep -nE "aten.item|nonzero|_local_scalar_dense"
+# then read the "# File:" comment immediately ABOVE the hit
+```
+
+That located the host read in one step. → `case-eomt-capture.md`.
+
+**Distinguish the two classes before reaching for a fix:** an unbacked symbol from a *shape*
+(dynamic dimension) wants a static canvas; one from a *value* (a host read of a buffer or tensor
+element) wants that value resolved in Python. They look identical in the error and need opposite
+fixes.
+
 ## Non-monotonic verdicts mean your scaffolding is in the graph
 
 **MEASURED.** A cumulative stage that "fails" while its **superset passes** is *impossible*. It

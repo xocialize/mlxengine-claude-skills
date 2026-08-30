@@ -126,6 +126,7 @@ The same cache is also a diagnostic hazard: **it caches failure-then-fallback**.
 | `references/compression.md` | Quantization / palettization / pruning via `coreai-opt` |
 | `references/export-recipes.md` | Capture or lowering fails; per-family graph prep |
 | `references/known-upstream-defects.md` | **Before every port** — the harvested failure-mode catalogue from `apple/coreai-torch` issues |
+| `references/case-eomt-capture.md` | A `GuardOnDataDependentSymNode` capture failure, root-caused and fixed — includes the grep-the-graph-dump technique |
 | `references/case-deformable-conv.md` | A complete worked triage-ladder pass — decompose-in-PyTorch beating a custom lowering, and how scale changed the ANE verdict |
 | `references/custom-lowerings.md` | An op has no lowering — `register_torch_lowering`, `TorchMetalKernel`, the supported-ops list, composite ops |
 | `references/runtime-api.md` | Python runtime sharp edges, toolchain versions, asset layout |

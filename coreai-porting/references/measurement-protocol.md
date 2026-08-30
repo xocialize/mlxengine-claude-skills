@@ -130,6 +130,19 @@ MEASURED-EQUIVALENT (LibreYOLO's harness, INHERITED, and a good design):
 
 ---
 
+## Three agreeing PSNRs mean your REFERENCE is wrong
+
+**MEASURED (EoMT, 2026-08-30).** A first run reported **8.17 dB on all three lanes**. Lanes that
+disagree on latency but agree exactly on parity are not three broken backends — they are three
+correct backends measured against a bad reference.
+
+The cause: building the fp32 reference model with `torch.manual_seed(0)` *before* the first build
+and then constructing a second model. The first build already consumed the RNG, so the "twin" had
+different weights. Fix: `copy.deepcopy` the model **before** casting to fp16.
+
+The rule mirrors the placement one: **three agreeing lanes mean the thing they share is at
+fault** — there, the inert flag; here, the reference.
+
 ## What a receipt must contain
 
 Every port ends with a receipt. Missing fields make the numbers unusable later.
