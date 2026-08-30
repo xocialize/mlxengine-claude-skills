@@ -34,6 +34,60 @@ before believing it.
 
 > An inherited recipe is a hypothesis. Measure it per port, per lane.
 
+**RE-VERIFIED 2026-08-29** on macOS 27.0 build 26A5421a, SRVGG general fp16 @128², 3 independent
+processes per config, <1% spread — the direction holds and the magnitude grew:
+
+| | GPU | ANE | PSNR |
+|---|---|---|---|
+| unpatched | 1.392 ms | **5.643 ms** | 68.60 |
+| patched | 1.429 ms | **6.813 ms (+20.7%)** | 68.60 |
+
+`strings main.mlirb` confirms the op is genuinely dropped (2 → 0 interpolate strings), and PSNR
+is bit-identical — so the rewrite is correct and exact. It simply costs 21% on the ANE.
+
+---
+
+## `AIProgram.optimize()` is a LANE-DEPENDENT TRADEOFF, not a free win
+
+**MEASURED 2026-08-29**, SRVGG general fp16 @128², 3 independent processes per config, spread
+<1%:
+
+| | GPU | ANE | asset | ANE PSNR |
+|---|---|---|---|---|
+| `optimize()` **on** | 2.22 ms | 5.43 ms | 4.83 MB | 68.66 |
+| `optimize()` **off** | **1.40 ms** | 5.65 ms | **2.49 MB** | 68.60 |
+
+**`optimize()` made the GPU lane 58% SLOWER, the ANE 4% faster, and nearly doubled the asset**,
+with no meaningful parity change.
+
+This matters because **everyone calls it unconditionally** — Apple's quickstart, LibreYOLO's
+exporter, and our own prior recipe. It is not wrong to call it; it is wrong to call it without
+measuring. If you ship the GPU lane, it may be actively harmful.
+
+**Always export both ways.** Record which you shipped and why. See also upstream
+`coreai-torch#49` (silent miscompile) and `#33` (segfault) in `known-upstream-defects.md` —
+`optimize()` has a track record.
+
+---
+
+## fp16 accuracy is not uniform across lanes
+
+**MEASURED**, same asset, same 12 tiles, SRVGG general fp16 @128²:
+
+| lane | PSNR min | PSNR mean |
+|---|---|---|
+| CPU | 53.38 | 59.71 |
+| GPU | **68.13** | **72.62** |
+| ANE | 62.88 | 68.60 |
+
+Two things worth carrying:
+
+1. **The CPU lane has the WORST fp16 numerics**, by ~13 dB against the GPU. The intuition that
+   CPU is the "accurate reference" is wrong here — do not use a CPU fp16 run as a parity
+   reference. Use **fp32** for the reference (that lane measured 130.84/135.18 dB).
+2. **The ANE costs ~4 dB against the GPU** on identical weights. That is the price of ANE
+   residency, and it is worth knowing *before* choosing a lane on a precision-sensitive model.
+
 ---
 
 ## Benchmark discipline

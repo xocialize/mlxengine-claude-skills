@@ -107,7 +107,7 @@ async def run_lane(asset: Path, lane: str, feed, *, iters: int = 20, warmup: int
     t0 = time.perf_counter()
     with contextlib.redirect_stderr(err):
         model = await AIModel.load(asset, specialization_options=opts)
-        fn = await model.load_function(next(iter(model.function_names)))
+        fn = model.load_function(next(iter(model.function_names)))
     cold_load_s = time.perf_counter() - t0
 
     for _ in range(warmup):

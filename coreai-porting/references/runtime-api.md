@@ -54,6 +54,36 @@ their shim's version gate is now too narrow.
 
 ---
 
+## The async surface — MEASURED, and not what it looks like
+
+```python
+model = await AIModel.load(path, specialization_options=opts)   # ASYNC
+fn    = model.load_function(name)                               # *** SYNC ***
+out   = await fn({"x": nd})                                     # ASYNC
+```
+
+`load_function` is **not a coroutine** — `await model.load_function(...)` raises
+`TypeError: object InferenceFunction can't be used in 'await' expression`. Only `AIModel.load`
+and `InferenceFunction.__call__` are async.
+
+Two useful things visible in the real signatures:
+
+```python
+AIModel.load_function(function_name, intermediate_logger=None, profiler=None)
+InferenceFunction.__call__(inputs=None, state=None)
+```
+
+- `load_function` takes the **debug hooks directly** — that is the seam for `IntermediateLogger`
+  and `Profiler` (→ `debugging-methodology.md`).
+- `__call__` takes a **`state` dict** — the mutable-state / KV-cache surface. **Still unexercised
+  by us**, but it is here, not somewhere exotic.
+
+## The library prints a banner to STDOUT
+
+`coreai-torch 0.4.1: converting 1 program(s) to Core AI` goes to **stdout**, not stderr. Any
+harness that parses JSON from a conversion subprocess must take the **last** line, or filter for
+`^{`. This cost a debugging cycle.
+
 ## `Profiler` requires ALL THREE callbacks
 
 **MEASURED.** `Profiler(...)` with only `on_log_event` leaves the interval hooks `None`, the

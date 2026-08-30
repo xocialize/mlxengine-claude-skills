@@ -37,9 +37,36 @@ time.** It is a real measurement of difficulty and belongs in the receipt.
 
 *One entry per sealed port. Empty until Phase 1 completes.*
 
-| Model | Sealed? | We missed | They missed | Both, differently | Stuck time |
-|---|---|---|---|---|---|
-| *(pending — Phase 1: `realesrgan`)* | | | | | |
+| Model | Sealed? | We missed | They missed | Both, differently |
+|---|---|---|---|---|
+| `realesrgan` (SRVGG general) | **NO — see note** | nothing | `optimize()` cost, placement proof, fp16, energy | canvas: theirs 64², ours 128² |
+
+> **Integrity note on Phase 1.** This port was **not sealed.** `libreyolo/export/coreai.py` was
+> read in full during the initial project review, before this protocol existed. The comparison
+> below is still useful, but it is **not a graded sealed port**, and must not be counted as one.
+> **The protocol starts clean at Phase 2 (`birefnet` / `eomt` / `swinir`).**
+
+**Phase 1 result — harness VALIDATED.** Independently derived architecture, export, parity and
+placement harness reproduce AB-R-0047 on a newer OS build (26A5421a vs 25A5388g):
+
+| | oracle | ours | Δ |
+|---|---|---|---|
+| fp16 ANE mean PSNR | 68.51 dB | **68.60 dB** | +0.09 |
+| GPU median clock under load | 1616 MHz | **1616 MHz** | 0 |
+
+Full receipt: `CoreAI/coreai-collection/receipts/realesrgan-general-fp16-s128.json`.
+
+**Comparison with LibreYOLO (unsealed):**
+- **Agreement:** `realesrgan` needs *no* special CoreAI graph preparation — it is in none of
+  their three family-prep sets and has no `_wrap_for_family` branch. We independently needed
+  none either. Their SRVGG forward is identical to what we derived from the checkpoints.
+- **They validate at 64², we ported at 128².** Not wrong — they validate conversion, not
+  performance — but our own oracle measured 64² as the *worst* config at 1080p (1053 ms vs
+  852 ms at t128). A concrete instance of *validated ≠ deployment-optimal*.
+- **They validate their own `LibreRealESRGANx4t` checkpoint**, not the original
+  `realesr-general-x4v3`, so the two parity claims are not about the same weights.
+- **They call `optimize()` unconditionally** — now measured to cost 58% on the GPU lane and
+  double the asset. So does Apple's quickstart. So did our own prior recipe.
 
 ## Findings ahead of the first port (environment/toolchain research, 2026-08-29)
 

@@ -23,10 +23,26 @@ below), and each package must say so, or a future maintainer will "fix" one towa
 
 ## Decided axes (MEASURED)
 
-### 1. Energy — CoreAI/ANE wins decisively
+### 1. Energy — CoreAI/ANE wins, but the size of the win depends on the opponent
 **MEASURED (SRVGG, M5 Max, t128):** ANE ties well-tuned MLX-GPU on wall clock while drawing
 **≈4.5–4.9× less energy per frame** (~17 W vs ~83 W over idle), and does not thermally throttle.
-Static CoreAI executables also beat MLX *dynamic* GPU by **2.2–2.4×** at parity.
+
+**REFINED 2026-08-29 — name the opponent.** That 4.7× is against **MLX-GPU fp32**. Measured
+against **CoreAI-GPU** (fp16, static — a far stronger opponent, which the same receipt records
+beating MLX-GPU by 2.2–2.4×), the ANE advantage is **1.94×**:
+
+| lane | W over idle | inf/s | mJ/inference |
+|---|---|---|---|
+| CoreAI-GPU | 106.2 | 808.4 | 131.4 |
+| CoreAI-ANE | **12.4** | 183.4 | **67.6** |
+
+The consistency check works: 4.7 ÷ ~2.3 ≈ 2.0. **Always state which GPU path the ANE is being
+compared against** — "4.7× less energy" and "1.94× less energy" are the same hardware, different
+baselines, and quoting the wrong one oversells by 2.4×.
+
+Thermal behaviour still favours the ANE unambiguously: MEASURED GPU sag **1620 → 1568 MHz within
+10 s** of sustained load; the ANE lane showed none, and held the GPU at its **338 MHz idle
+clock** throughout — which is also the residency oracle.
 
 → If the workload is sustained, battery-bound, or thermally constrained, this axis alone can
 decide it.
@@ -96,6 +112,7 @@ Does it serve two product tiers?               yes → BOTH is a real answer (ME
 | Date | Model | Class | Verdict | Basis |
 |---|---|---|---|---|
 | 2026-07-31 | Real-ESRGAN SRVGG (1.4M) | plain dense convnet | **BOTH** — CoreAI/ANE fast tier, MLX flexible tier | MEASURED: parity 58–69 dB, energy 4.5–4.9×, memory 19 MB vs 21.24 GB |
+| 2026-08-29 | Real-ESRGAN SRVGG re-port (calibration) | plain dense convnet | **BOTH, confirmed** | MEASURED: ANE 68.60 dB, 5.65 ms, 67.6 mJ/inf; CoreAI-GPU 72.62 dB, 1.40 ms, 131.4 mJ/inf. ANE **1.94×** more energy-efficient but **4× slower** and **4 dB less accurate** than CoreAI-GPU |
 | 2026-08-01 | Moebius UNet (226M) | latent-diffusion, λ-attention | **MLX** — CoreAI/ANE blocked | MEASURED: rank-6 reject, then compositional ANECCompiler bug (upstream #138). GPU lane still gained 4.1× from the rewrite |
 
 *Add one row per port. A row with no measurement is not a row.*
