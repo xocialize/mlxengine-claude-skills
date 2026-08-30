@@ -68,6 +68,34 @@ than the base class. Check what you actually matched.
 
 ---
 
+## ⚠️ RANDOM WEIGHTS INVALIDATE fp16 PARITY MEASUREMENTS
+
+**MEASURED 2026-08-30.** Identical models, identical code, only `pretrained=False` → `True`:
+
+| model | random: GPU / ANE | pretrained: GPU / ANE | ANE shift |
+|---|---|---|---|
+| `resnet50` | 80.58 / **46.41** | 61.35 / **63.56** | **+17 dB** |
+| `efficientnetv2_rw_s` | 61.26 / **14.30** | 70.28 / **46.10** | **+32 dB** |
+| `mobilenetv4_conv_small` | 76.56 / **61.75** | 58.09 / **63.15** | **+1 dB** |
+
+Random weights are **pessimistic for the ANE specifically** — the GPU numbers move too, but far
+less. Read from the random-weight run, the conclusion would have been *"ANE fp16 is
+systematically 20–47 dB worse than GPU"*. Read from the pretrained run, **two of three models
+have the ANE equal to or BETTER than the GPU**. Opposite headline, same code.
+
+Why it is not surprising in hindsight: random init produces weight and activation distributions
+no trained network has, and fp16 headroom depends entirely on those distributions. A random
+network is a different numerical problem.
+
+> **Extends a rule we already had, into a domain we had not applied it to.**
+> `ane-eligibility.md` says random-weight smoke tests cannot clear a graph for the ANE — that
+> was about **value-dependent COMPILER bugs**. This shows the same rule governs **NUMERICS**:
+> a parity number measured on random weights is not evidence about the trained model, in either
+> direction.
+>
+> **Never report an fp16 parity figure from an untrained model.** If weights are unavailable,
+> report the gap as unmeasured rather than substituting random ones.
+
 ## Parity thresholds
 
 Reference tiers from Apple's vendored skill, cross-checked against our own ports:

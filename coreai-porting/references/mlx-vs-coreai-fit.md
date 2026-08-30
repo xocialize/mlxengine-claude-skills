@@ -172,7 +172,7 @@ Listed so they can be closed by measurement rather than argued about.
 | Axis | Hypothesis | How to close it |
 |---|---|---|
 | **Autoregressive / KV-cache models** | MLX is the better fit; CoreAI `state_names` unproven for us | **Upstream now ships LLM recipes** (`phi`, `smollm2`, `gemma3`, `mistral`, `mixtral`, `gpt_oss`, `muse_glimmer`) **and a `CoreaiStatefulExporter` KV-cache reference** — the candidate gap is closed, the measurement is not |
-| **Small convnets** | CoreAI/ANE should dominate on every axis | Phase 1 classifiers (`resnet`, `mobilenetv4`) |
+| ~~Small convnets~~ | **PARTLY DECIDED.** ANE eligibility and speed: yes, universally. fp16 accuracy: **family-dependent** — BN+ReLU nets pass, SE-bearing nets fail the 50 dB gate. Cause not yet established (activation hypothesis tested and rejected) | MEASURED 2026-08-30, `case-wave2-convnets.md` |
 | **Dev velocity** | MLX iterates far faster; CoreAI export/specialize cycle is slow | Time both loops on the same model and record it |
 | **Quantization below fp16** | Unknown for CoreAI; MLX quant is well understood | Phase 3 compression sweep |
 | **Multi-function / promptable models** | CoreAI's multi-function asset may beat MLX's re-encode | SAM family, Phase 3 |
@@ -203,6 +203,7 @@ Does it serve two product tiers?               yes → BOTH is a real answer (ME
 |---|---|---|---|---|
 | 2026-07-31 | Real-ESRGAN SRVGG (1.4M) | plain dense convnet | **BOTH** — CoreAI/ANE fast tier, MLX flexible tier | MEASURED: parity 58–69 dB, energy 4.5–4.9×, memory 19 MB vs 21.24 GB |
 | 2026-08-29 | Real-ESRGAN SRVGG re-port (calibration) | plain dense convnet | **BOTH, confirmed** | MEASURED: ANE 68.60 dB, 5.65 ms, 67.6 mJ/inf; CoreAI-GPU 72.62 dB, 1.40 ms, 131.4 mJ/inf. ANE **1.94×** more energy-efficient but **4× slower** and **4 dB less accurate** than CoreAI-GPU |
+| 2026-08-30 | Wave 2 convnets (7 families) | plain convnets | **CoreAI/ANE for BN+ReLU nets; check per model** | MEASURED: all ANE-eligible (0 rejections), 1.3–5.7× faster than the GPU lane, but fp16 parity splits — `resnet*`/`mobilenetv4` pass (−3…+5 dB vs GPU), `efficientnet*`/`mobilenetv3`/`convnext` fail (−10…−30 dB). → `case-wave2-convnets.md` |
 | 2026-08-30 | EoMT (encoder-only mask transformer) | ViT segmentation | **CoreAI-GPU** | MEASURED: capture fixed, fp32 134 dB; fp16 ANE 43.58 dB (below the 50 dB gate) and `slice_scatter`/SDPA rejected → partitions |
 | 2026-08-29 | Deformable conv (DCNv2) — BiRefNet's blocker | scattered-read decoder | **MLX / GPU, not ANE** | MEASURED: converts exactly (3.6e-07 vs torchvision) but `gather` is ANE-rejected at scale; "ANE" lane 5.5× slower than the GPU lane |
 | 2026-08-01 | Moebius UNet (226M) | latent-diffusion, λ-attention | **MLX** — CoreAI/ANE blocked | MEASURED: rank-6 reject, then compositional ANECCompiler bug (upstream #138). GPU lane still gained 4.1× from the rewrite |
