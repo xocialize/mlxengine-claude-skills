@@ -132,6 +132,31 @@ Two lanes with equal latency are the same lane. There is no exception to this th
 
 ---
 
+## ⚠️ ZERO VALIDATION HITS IS **NOT** PROOF OF RESIDENCY
+
+**MEASURED 2026-08-30, and it corrects earlier guidance in this very file.** Two graphs, both
+rewritten to rank 5, both reporting **0 ANE validation hits**:
+
+| model | ANE-lane gpu_freq | resident? |
+|---|---|---|
+| SCUNet rank-5 | **338 MHz — idle** | **YES** |
+| SwinIR rank-5 | **1524 MHz — GPU busy** | **NO** |
+
+Same clean bill of health from the validation scan; opposite reality. SwinIR's "ANE" lane ran
+**20× slower than the plain GPU lane** (88.7 vs 4.5 ms) and burned **6.2× more energy per
+inference** (1814 vs 291 mJ) while the GPU sat pinned at 1524 MHz.
+
+> **Validation hits are a reliable NEGATIVE, never a positive.**
+> `hits > 0` ⇒ definitely not resident. `hits == 0` ⇒ **nothing proven**. The graph can be
+> op-wise eligible and still be placed on the GPU, silently, with no message emitted.
+>
+> **The GPU-idle-clock oracle is the only positive evidence we have.** Run it for every
+> residency claim. An earlier version of this file said hits were "the signal to lean on" —
+> that was too strong, and this is the measurement that corrected it.
+
+This is the same failure family as "a preference is not a placement", one level deeper: we
+removed every *stated* objection and the runtime still declined, without saying so.
+
 ## Residency oracles, ranked by trustworthiness
 
 1. **`macmon` GPU-idle signature — the best oracle we have.** MEASURED: `gpu_freq` pinned at the
