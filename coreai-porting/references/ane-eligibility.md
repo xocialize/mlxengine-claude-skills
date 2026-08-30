@@ -15,6 +15,12 @@ The trap: `torch.export` decomposes an einsum with six distinct indices — e.g.
 the graph looks fine until you ask for ANE, and then you get a hard raise out of
 `load_function`.
 
+**MEASURED again 2026-08-30 (SCUNet):** `einops.rearrange` used for window partitioning in a
+Swin-style block produces rank-6 tensors just as multi-index einsums do — 678 ANE rejections and
+an ANE lane **30× slower than the GPU**. → `case-scunet-window-attention.md`. Treat
+`einops.rearrange` in any window-attention block as a rank-6 red flag and check
+`graph_prescan()` before exporting.
+
 **Fix:** fold multi-index einsums to batched matmul (contract axes merged, batch axes merged).
 Algebraically exact — so *prove it*: verify `max abs diff == 0.0` in **fp64** before trusting it.
 

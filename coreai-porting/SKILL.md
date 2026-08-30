@@ -131,6 +131,7 @@ The same cache is also a diagnostic hazard: **it caches failure-then-fallback**.
 | `references/export-recipes.md` | Capture or lowering fails; per-family graph prep |
 | `references/runtime-limits.md` | **Read before designing any long-running process** — the ~8,000-inference hard ceiling |
 | `references/known-upstream-defects.md` | **Before every port** — the harvested failure-mode catalogue from `apple/coreai-torch` issues |
+| `references/case-scunet-window-attention.md` | Window attention on the ANE — rank-6 from `einops.rearrange`, and a 30× partition penalty |
 | `references/case-wave2-convnets.md` | ANE behaviour across convnet families — eligibility is easy, fp16 accuracy is the real gate |
 | `references/case-eomt-capture.md` | A `GuardOnDataDependentSymNode` capture failure, root-caused and fixed — includes the grep-the-graph-dump technique |
 | `references/case-deformable-conv.md` | A complete worked triage-ladder pass — decompose-in-PyTorch beating a custom lowering, and how scale changed the ANE verdict |
