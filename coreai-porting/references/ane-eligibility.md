@@ -21,6 +21,23 @@ an ANE lane **30× slower than the GPU**. → `case-scunet-window-attention.md`.
 `einops.rearrange` in any window-attention block as a rank-6 red flag and check
 `graph_prescan()` before exporting.
 
+**FIX GENERALISED AND PROVEN 2026-08-30 (SCUNet):** rank-6 from window attention is removable,
+and doing so took a graph from **678 ANE rejections to 0** with residency proven on the GPU-idle
+oracle. Three patterns, all exact in fp64:
+
+1. **Window partition** — split one axis at a time and **merge the batch axis with each window
+   axis as it is produced**, so no intermediate exceeds rank 5. Never materialise
+   `b w1 w2 p1 p2 c`.
+2. **Multi-index einsum** — fold the leading indices into one batch axis and use `bmm`
+   (`'hbwpc,hbwqc->hbwpq'` → rank-3 batched matmul).
+3. **Constant rank-6 tensors** (attention masks built with `torch.zeros(h,w,p,p,p,p)`) —
+   precompute **eagerly on a warmup pass** so they enter the graph as constants.
+
+Reusable implementation: `coreai-collection/recipes/scunet/rank5.py`.
+**Caveat that matters: this fixes ELIGIBILITY, not accuracy or speed** — SCUNet's fp16 parity
+moved only 37.78 → 39.12 dB and the ANE stayed 3.6× slower than the GPU lane.
+→ `case-scunet-window-attention.md`.
+
 **Fix:** fold multi-index einsums to batched matmul (contract axes merged, batch axes merged).
 Algebraically exact — so *prove it*: verify `max abs diff == 0.0` in **fp64** before trusting it.
 
