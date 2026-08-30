@@ -137,6 +137,43 @@ experience of probing `"output"` then `"out"`:
 
 ---
 
+## Stateful models — `state_names` has a reference implementation upstream
+
+**INHERITED, 2026-08-30, `apple/coreai-models`.** Our "never done" note on mutable state is now
+backed by a working example rather than a doc mention.
+
+`python/tests/_runner_infra/export/exporters/coreai_exporter.py` ships a `CoreaiStatefulExporter`
+taking `state_names`, and `testing_utils.py` drives it for a KV cache:
+
+```python
+CoreaiStatefulExporter(
+    input_names=("input_ids", "position_ids"),
+    output_names=("logits",),
+    state_names=(key_cache_swift_name, value_cache_swift_name),
+)
+```
+
+Note the shape of the contract: **`k_cache` / `v_cache` are passed as inputs to the export but
+declared as `state_names`, not as `input_names`** — the exporter subtracts the state names from
+the reference inputs to derive the true inputs. At runtime, state is passed via
+`InferenceFunction.__call__(inputs, state=...)`.
+
+Still **unexercised by us**, but the pattern is no longer a guess. Read that file before the
+first stateful port.
+
+## The official export CLIs
+
+`apple/coreai-models` exposes task-level entry points rather than expecting a hand-rolled script:
+
+```bash
+uv run coreai.llm.export       google/gemma-3-4b-it --compression none --compute-precision bfloat16
+uv run coreai.diffusion.export Wan-AI/Wan2.1-T2V-1.3B-Diffusers --compression 4bit-asym
+```
+
+**Compression is wired into the official path** (`--compression none|8bit|4bit-asym`), not only
+available standalone via `coreai-opt` (→ `compression.md`). For a supported family, check for a
+recipe in `models/` before writing an export script.
+
 ## OPEN
 
 - **AOT compilation (`xcrun coreai-build compile --platform ...`) has never been run by us.**
