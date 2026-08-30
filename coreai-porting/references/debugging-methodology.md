@@ -1,11 +1,63 @@
 # Debugging methodology — when the error is opaque, redacted, or moves
 
 CoreAI conversion errors are frequently `<private>`-redacted in the unified log and **empty in
-the exception**. Guessing from error text alone found us *nothing*. Bisection found everything.
+the exception**. Guessing from error text alone found us *nothing*.
 
 ---
 
-## The bisection ladder that worked
+## ⚠️ Read this first: official debug tooling exists, and we did not use it
+
+**Discovered 2026-08-29 from `apple.github.io/coreai-torch/main/api/debugging.html`.**
+INHERITED — documented, not yet exercised by us.
+
+Our bisection ladder below was built during the Moebius port **without knowing this API
+existed**. It is still correct for *compile* failures — where no runnable program exists to
+inspect — but for **numeric** failures it is very likely the hard way round.
+
+| Tool | What it does |
+|---|---|
+| `create_validator_for_exported_program()` / `create_validator_for_coreai_program()` | then `check_for_nans()` / `check_for_infs()` — **locates the op where numerics go wrong** |
+| `create_comparator_for_programs()` | **built-in PyTorch ↔ CoreAI comparison with configurable tolerance** |
+| `CoreAIInspector` | **captures intermediate outputs from a deployed model, by operation ID** |
+| graph diff / isomorphism | structural changes between model versions; unmapped nodes |
+| benchmarker | module-level and op-level timing across runs |
+| torch utilities | save/load intermediate tensors to disk for offline analysis |
+
+Required environment — **without these the debug metadata is not preserved**:
+
+```bash
+export USE_LOCAL_COREAI=1
+export ENABLE_DEBUG_INFO=1
+```
+
+### What this means for us, stated plainly
+
+- **`CoreAIInspector` would likely have collapsed the Moebius bisection.** Instead of per-block
+  export plus subprocess load, we could have inspected intermediates by op ID directly. Budget
+  a day of that arc as avoidable.
+- **We hand-rolled a parity harness when an official comparator exists.** Before building
+  another one, evaluate `create_comparator_for_programs()` — then A/B it against ours and
+  LibreYOLO's. It may be better; it may lack the input-sensitivity term that stops a degenerate
+  graph reading as perfect parity (→ `measurement-protocol.md`). **Measure before adopting
+  either.**
+- **`USE_LOCAL_COREAI=1` conflicts with the OS-runtime default.** Our placement work runs on
+  `_coreai_runtime_os`; this flag selects the local runtime. Whether debug tooling and delegate
+  placement can be used *in the same run* is **OPEN and matters** — if not, diagnosis and
+  placement proof are separate runs and must be reported as such.
+
+**Lesson for the program, not just for CoreAI:** we spent a day deriving a bisection ladder that
+partially duplicates shipped tooling. Before building a harness, read the toolchain's own
+debugging page. This is the exact failure the sealed-oracle protocol is designed to catch — the
+grader here was Apple's documentation rather than LibreYOLO.
+
+---
+
+## The bisection ladder (still correct for COMPILE failures)
+
+Bisection remains the tool when the program will not build at all — validators, comparators and
+inspectors all need something that runs.
+
+---
 
 **MEASURED (Moebius, a full day's arc).** Each level took ~10 minutes:
 

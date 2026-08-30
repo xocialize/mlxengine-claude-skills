@@ -26,6 +26,13 @@ program.save_asset(Path("model_fp16_static128.aimodel"))
 runs at, permanently. Encode dtype and canvas in the filename; the asset will reject mismatched
 input dtypes and the caller needs to know from the name.
 
+**A/B `optimize()`.** It has silently miscompiled (`coreai-torch#49`) and segfaulted (`#33`).
+Export with and without it, parity-check both, compare size and all three lanes. Record which
+you shipped and why. → `known-upstream-defects.md`.
+
+**Screen activations before any fp16 export** — `softplus`, `mish`, `logsumexp`,
+`logcumsumexp` overflow in fp16 on the ANE (`#21`).
+
 **Export fp32 AND fp16.** The fp32 lane isolates "graph wrong" from "precision loss" in one
 number → `precision.md`.
 

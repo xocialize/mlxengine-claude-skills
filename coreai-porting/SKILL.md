@@ -58,10 +58,13 @@ that is *better* are different findings. → `references/measurement-protocol.md
 0. FIT        CoreAI, MLX, or both?              → references/mlx-vs-coreai-fit.md
 1. EXPORT     torch.export → coreai-torch        → references/export-recipes.md
 2. PRECISION  fp32 proves the graph, fp16 ships  → references/precision.md
+   COMPRESS   quantize / palettize / prune        → references/compression.md
 3. ELIGIBLE   will the ANE even accept it?       → references/ane-eligibility.md
 4. PLACE      prove where it ran                 → references/placement-and-residency.md
 5. MEASURE    parity, latency, energy, memory    → references/measurement-protocol.md
 6. PACKAGE    Swift / MLXEngine / publish        → Skill("coreai-swift-integration")
+
+   op has no lowering?                     → references/custom-lowerings.md
 ```
 
 When a step fails and the error is opaque — which is the normal case —
@@ -87,6 +90,10 @@ program = (TorchConverter()
 program.optimize()
 program.save_asset(Path("model.aimodel"))               # wants a Path, not a str
 ```
+
+> ⚠️ **`program.optimize()` is not free.** Upstream `coreai-torch#49` reports it silently
+> miscompiling broadcasting-significant axis moves, and `#33` was a segfault in it. **Export both
+> ways and parity-check each** — see `references/known-upstream-defects.md`.
 
 `save_asset` writes a **directory**, and `main.mlirb` is roughly checkpoint-sized (MEASURED:
 431 MB fp16 / 862 MB fp32 for a 226M UNet). Gitignore the exports dir before the first
@@ -116,7 +123,10 @@ The same cache is also a diagnostic hazard: **it caches failure-then-fallback**.
 | `references/placement-and-residency.md` | Before ANY benchmark or ANE claim. **The frontier area — we have the least experience here.** |
 | `references/ane-eligibility.md` | The graph won't compile for ANE, or you're designing for it |
 | `references/precision.md` | fp16 parity is bad, or mixed precision won't legalize |
+| `references/compression.md` | Quantization / palettization / pruning via `coreai-opt` |
 | `references/export-recipes.md` | Capture or lowering fails; per-family graph prep |
+| `references/known-upstream-defects.md` | **Before every port** — the harvested failure-mode catalogue from `apple/coreai-torch` issues |
+| `references/custom-lowerings.md` | An op has no lowering — `register_torch_lowering`, `TorchMetalKernel`, the supported-ops list, composite ops |
 | `references/runtime-api.md` | Python runtime sharp edges, toolchain versions, asset layout |
 | `references/measurement-protocol.md` | Parity thresholds, benchmark discipline, the A/B rule |
 | `references/debugging-methodology.md` | The error is opaque, redacted, or moves between runs |
