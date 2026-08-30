@@ -73,6 +73,40 @@ crash.
 
 ---
 
+## ⚠️ Instrumenting a graph can change its ANE eligibility
+
+**MEASURED (EoMT, 2026-08-30).** Re-exporting a working ANE-resident graph with each layer's
+hidden state added as an output **broke ANE compilation**
+(`ANECCompile() FAILED … It has to be valid custom strides … TERNARY_DYNAMIC_GOC`), and the lane
+silently fell back. The tell: **every ANE number equalled its GPU number exactly.**
+
+Extra outputs change fusion. So does truncation, and so does a prefix model. **Any re-export is a
+different artifact**, which means the classic "add probes and re-run" technique is invalid for
+ANE *numerics* questions — you end up measuring a graph that is not the one you ship.
+
+For an ANE numerics question the only faithful instruments are the ones that read intermediates
+out of the **same compiled asset**: `coreai_torch.debugging.inspector.CoreAIInspector` and
+`comparator.create_comparator_for_programs`. Re-export instrumentation remains fine for *capture*
+and *lowering* questions, where the graph itself is what is under test.
+
+### Using the official debug tooling — sharp edges, MEASURED
+
+- It lives in **`coreai_torch.debugging`**, not `coreai.debug`, and **nothing is exported at the
+  package level** — import from `.comparator`, `.inspector`, `.validator` directly.
+- `create_comparator_for_programs` and `Comparator.compare` are both **coroutines**.
+- It **does** take `specialization_options`, so it can compare against a chosen lane, and it
+  bisects the source graph by default. That is exactly what an ANE numerics question needs.
+- `Comparator.Status` has only `PASS` / `FAIL` / `UNKNOWN` — there is no `SKIP`.
+- **OPEN:** running the source ExportedProgram fails under torch 2.11 with
+  `TypeError: 'int' object is not callable … While executing %_guards_fn`. Unresolved; it blocks
+  the comparator path today.
+- **`USE_LOCAL_COREAI=1` and delegate placement are MUTUALLY EXCLUSIVE.** MEASURED:
+  `SpecializationOptions.is_supported()` returns **False** under it. So the local-runtime debug
+  path cannot inspect the ANE lane at all. Worse — **`from_preferred_compute_unit_kind` still
+  succeeds and still reports "Neural Engine"** when `is_supported()` is False. The options object
+  lies; check `is_supported()` and hard-exit. (Fourth API trap → `placement-and-residency.md`.)
+  `ENABLE_DEBUG_INFO=1` alone keeps the OS runtime and placement.
+
 ## `GuardOnDataDependentSymNode` — grep the graph dump, not the exception
 
 **MEASURED (EoMT, 2026-08-30).** The exception text is useless and `torch.export` even prints

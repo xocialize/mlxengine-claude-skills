@@ -116,12 +116,68 @@ MEASURED: prepared eager graph is **bit-identical** to the original — max |Δ|
 > preserved-as-composite does **not** imply ANE-eligible — one SDPA instance is rejected in fp16
 > while the same graph's other attention sites are not. Do not generalise from the op list.
 
+## Chasing the fp16-on-ANE gap — and the observer effect that blocks it
+
+**The gap:** fp32 **134 dB**, fp16-GPU **66.62 dB**, fp16-ANE **43.58 dB** on the *identical
+asset*. Neither the graph nor fp16 itself — 23 dB between two lanes running the same bytes.
+
+**Attempt 1 — the official comparator.** `coreai_torch.debugging.comparator.create_comparator_for_programs`
+is the right instrument: it bisects the graph op by op **and takes `specialization_options`**, so it
+can run the target on a chosen lane. Rough edges found: it lives in the submodule (nothing is
+exported at `coreai_torch.debugging` package level), it is a **coroutine** (as is
+`Comparator.compare`), and `Comparator.Status` has only `PASS`/`FAIL`/`UNKNOWN` — no `SKIP`.
+It then failed executing the *source* ExportedProgram under torch 2.11:
+`TypeError: 'int' object is not callable ... While executing %_guards_fn`. **Unresolved.**
+
+**Attempt 2 — instrument the graph. THIS IS THE TRAP.**
+Re-exporting with every layer's hidden state as an extra output **broke ANE compilation
+outright**:
+
+```
+_ANECompiler : ANECCompile() FAILED
+Compiler internal error: It has to be valid custom strides
+- From PEFUSED_GOC Layer: … TERNARY_DYNAMIC_GOC: Pre-Scale: 1, ScaleBiasNegate: Y,
+  ScaleBiasBroadcast: [ W:192 ]
+```
+
+The ANE lane then fell back — and the tell was unmissable once the numbers were in front of me:
+**every ANE row equalled its GPU row to the last decimal.**
+
+| output | CPU dB | GPU dB | ANE dB |
+|---|---|---|---|
+| h0 (embeddings) | 71.83 | 84.01 | **84.01** |
+| h1 | 69.20 | 80.33 | **80.33** |
+| h2 | 67.50 | 78.25 | **78.25** |
+| h3 | 66.64 | 76.88 | **76.88** |
+| h4 | 65.38 | 75.86 | **75.86** |
+| h5 (final norm) | 64.69 | 75.60 | **75.60** |
+| class_logits | 56.89 | 66.62 | **66.62** |
+| mask_logits | 56.76 | 69.81 | **69.81** |
+
+> ### The observer effect
+> **Adding outputs to a graph can change its ANE eligibility.** Extra outputs alter fusion —
+> here producing a `TERNARY_DYNAMIC_GOC` the compiler rejects — so an instrumented export is
+> **not the same artifact** you are trying to debug. Any re-export (added outputs, truncation,
+> a prefix model) has this problem.
+>
+> **Therefore the only faithful instrument for an ANE numerics question is one that reads
+> intermediates out of the SAME compiled asset** — the inspector/comparator path. Making that
+> work is a prerequisite, not a convenience.
+
+**What the run did establish** (GPU lane, still useful):
+- fp16 loss is **gradual**, not a single bad layer: 84.01 → 75.60 dB across six stages.
+- The `predict` head costs the most in one step: 75.60 → 66.62 dB.
+- **The CPU lane is 10–12 dB worse than the GPU at every single stage**, not just at the output —
+  further confirmation it cannot serve as a reference (`coreai-torch#74`).
+
 ## Still OPEN
 
 - Can the `slice_scatter` be rewritten as a masked `where`/`cat` to become ANE-eligible? The
   natural next experiment, and the same shape of fix as the validity-mask rewrite in
   `case-deformable-conv.md`.
 - Why is only `scaled_dot_product_attention_2` rejected and not its siblings?
-- The fp16 ANE 43.58 dB has not been root-caused. Given `precision.md`, first suspects are
-  normalisation statistics and the `-1e9` mask fill, which is **not fp16-representable**
-  (fp16 max ≈ 65504) and will saturate to `-inf`.
+- **The fp16 ANE 43.58 dB is still not root-caused**, and the two obvious routes are blocked:
+  the comparator fails on torch 2.11's `_guards_fn`, and re-exporting with instrumentation
+  changes ANE eligibility (above). Next step is to unblock the comparator — that is the only
+  faithful instrument. The `-1e9` mask-fill suspicion is **eliminated**: the `dtype` variant
+  replaced it with `finfo(fp16).min` and parity was unchanged at 43.58 dB.
