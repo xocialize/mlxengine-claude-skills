@@ -182,3 +182,39 @@ recipe in `models/` before writing an export script.
 - **iOS has never been targeted.** `set_static_shape_config()` and the iOS-vs-macOS compression
   preset split are unexercised.
 - Whether `powermetrics --samplers ane` is a usable residency oracle. Untried.
+
+---
+
+## `fn.desc` — introspecting an asset without guessing  (MEASURED 2026-08-30)
+
+Not in the docs, and not discoverable from `dir(fn)`, which shows exactly one attribute. The
+`InferenceFunctionDescriptor` behind it is how you drive an arbitrary `.aimodel` without
+hard-coding names or shapes:
+
+```python
+fn = model.load_function(next(iter(model.function_names)))
+d  = fn.desc
+d.input_names        # ['x']
+d.output_names       # ['logits']
+d.state_names        # []
+d.name               # 'main'
+
+idesc = d.input_descriptor('x')     # also d.output_descriptor(...), d.state_descriptor(...)
+idesc.shape          # [1, 3, 224, 224]
+idesc.dtype          # 'float16'
+idesc.rank           # 4
+idesc.storage_kind   # 'ioSurface'
+```
+
+Three things this buys:
+
+1. **Generic harnesses.** Build the feed dict straight from the descriptors instead of assuming
+   an input is called `x` — `scripts/residency.py` does exactly this.
+2. **The #75 budget, computed from the asset.** `len(d.output_names)` is the divisor:
+   `floor(16384 / n_outputs)` inferences before the process dies. You can print a model's own
+   safe budget before running it.
+3. **`storage_kind` names the exhausted resource.** Outputs report `ioSurface` — the same
+   allocation whose 2^14 table `coreai-torch#75` exhausts.
+
+`rank` is worth reading at load time too: rank > 5 is the ANE eligibility ceiling
+(→ `ane-eligibility.md`).

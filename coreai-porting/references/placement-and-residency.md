@@ -241,3 +241,16 @@ the placement itself stays blocked.
 - [ ] `ane_validation_message` lines extracted (or confirmed absent)
 - [ ] GPU-idle-clock checked during sustained inference
 - [ ] Every lane re-measured after the most recent graph rewrite
+
+---
+
+## Just run the script
+
+Everything on this page is implemented in `scripts/residency.py`, including the two refusals
+(dead worker, inert oracle). Prefer it to re-deriving the protocol by hand:
+
+```bash
+python scripts/residency.py --asset model.aimodel
+```
+
+It prints `NO VERDICT` and exits 2 rather than guessing. That is the feature.

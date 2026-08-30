@@ -151,3 +151,16 @@ times a lane, scans stderr for `ANECCompile` / `ane_validation_message`, and fla
 latencies agree (two lanes with equal latency are the same lane). Run it standalone to print
 this machine's placement surface. **Use it instead of hand-rolling options** — it exists because
 three separate API traps each produce plausible mislabeled data.
+
+`scripts/residency.py` — **the residency verdict, with its own control built in.** Point it at an
+asset; it introspects `fn.desc` for input shapes and output count, runs the requested lane paced
+safely under the #75 cap, runs a **GPU-lane control through the identical harness**, and prints a
+verdict only if (a) every worker survived and (b) the control read *busy*. It refuses — exit 2,
+"NO VERDICT" — rather than reporting on a dead process or an oracle that cannot discriminate.
+Both refusals were real bugs first. Validated against known ground truth: SCUNet-rank5
+→ resident, SwinIR-rank5 → not, same rank, same 0 hits.
+
+`scripts/ane_preflight.py` — pre-export triage. `graph_prescan()` flags rank>5 tensors, host
+reads, and suspect ops *before* you pay an export; `probe_asset()` loads and scans diagnostics;
+`clear_cache()` drops an asset's specialization entries — **call it BEFORE a diagnostic run**,
+since the cache also caches failure-then-fallback.
