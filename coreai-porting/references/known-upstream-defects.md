@@ -93,6 +93,43 @@ you stay out of this class entirely.
 
 ---
 
+## Re-testing: run the suite, do not re-check by hand
+
+`Development/coreai-probe/regression/retest.py` runs a probe per filed bug and reports
+**FIXED / present / CHANGED**, stamping the macOS build, `CoreAIRuntime` version and toolchain
+versions, appending to `results.jsonl` so the history shows *when* something changed.
+
+```bash
+<venv>/bin/python regression/retest.py                 # all
+<venv>/bin/python regression/retest.py 75 --expect-present
+```
+
+**Run it on every macOS beta bump and every `coreai-torch` release.** Fixes are likely during a
+beta cycle, and a stale "known broken" note is how a capability stays written off after it has
+been restored.
+
+### ⚠️ A regression probe MUST be verified to fail at baseline
+
+**MEASURED — this nearly shipped.** The first `#75` probe used a tiny single-output conv model
+and completed 12,000 iterations **cleanly** on a machine that had crashed four processes on the
+real repro an hour earlier. It would have reported `FIXED` forever and nobody would have looked
+again.
+
+The bug is IOSurface **handle** exhaustion for *output* backing, so the probe has to reproduce
+the original's output profile — two outputs, one of them the exact `[1,20,56,56]` fp16 descriptor
+named in the crash reports. **Simplifying the repro silently destroyed it.**
+
+Two rules:
+
+1. **Every probe is verified `present` at baseline before it is trusted.** `--expect-present`
+   makes that a hard failure in CI.
+2. **Treat a first `FIXED` as a probe bug until confirmed by a second route.** A false FIXED is
+   strictly worse than no probe: it is a standing, confident lie.
+
+This is the same false-negative failure as the under-powered endurance test in
+`runtime-limits.md` — third occurrence in this program. **When a probe passes, ask what would
+have to be true, and check that it is.**
+
 ## Reporting routing — MEASURED the hard way
 
 | Defect type | Where it goes |
@@ -107,5 +144,15 @@ bug. Can you file a report with the Feedback Assistant?"*
 **So the Moebius ANE door is still shut**, and #138 being closed is not evidence otherwise. Any
 compiler-level bug we find needs a Feedback Assistant report to go anywhere.
 
-Our filings: **`apple/coreai-torch#73`** (avg_pool2d `count_include_pad` off-by-one, still live
-in 0.4.2).
+Our filings — all four verified `present` at baseline on macOS 27.0 (26A5421a) /
+`CoreAIRuntime 3600.83.2.14.1`:
+
+| # | Defect | Class |
+|---|---|---|
+| [#73](https://github.com/apple/coreai-torch/issues/73) | `avg_pool2d` `count_include_pad` off-by-one, still live in 0.4.2 | hard failure |
+| [#74](https://github.com/apple/coreai-torch/issues/74) | CPU delegate silently miscompiles a bool `bitwise_and` chain | **silent wrongness** |
+| [#75](https://github.com/apple/coreai-torch/issues/75) | Process dies after ~8,000 inferences (IOSurface) | **uncatchable crash** |
+| [#76](https://github.com/apple/coreai-torch/issues/76) | Debugging comparator cannot execute the source `ExportedProgram` | **blocks the only faithful ANE-numerics instrument** |
+
+Tracker with watch-list and action items: `coreai-probe/UPSTREAM-BUGS.md`; bridge records
+**AB-R-0164** (receipt) and **AB-A-0037** (stateful ask).
