@@ -121,6 +121,54 @@ blocked on [`coreai-torch#76`](https://github.com/apple/coreai-torch/issues/76),
 re-exporting with probes changes ANE eligibility (→ `case-eomt-capture.md`). Three hypotheses
 guessed from correlation, two already wrong: **stop guessing and get the instrument working.**
 
+## DRUNet — a full port with real weights and an INDEPENDENT gate
+
+The first Wave 2 model ported end to end from our own assets rather than timm.
+
+| | value |
+|---|---|
+| fp32 torch vs the oracle rig's golden | **inf dB (bit-exact)** |
+| fp16 export | rank 4, 65.3 MB, **0 convert-time ANE hits** |
+| CPU / GPU / **ANE** parity vs golden | 55.73 / 75.34 / **64.12 dB** |
+| ANE rejections | **0** — fully eligible, 2.06 s cold specialization |
+| latency | ANE 3.198 ms vs GPU 2.642 ms (ANE *slower* here — 32.6M params) |
+
+DRUNet is a plain conv + ReLU residual UNet with **no BatchNorm**, strideconv down and
+`ConvTranspose2d` up. It passes comfortably, consistent with the family split above, and
+`ConvTranspose2d` converted without hitting upstream `#57`/`#58` at this configuration.
+
+Note the ANE is **slower than the GPU lane** on this one, unlike the small classifiers (which
+were 2–5.7× faster). Model size flips it: the ANE's advantage is largest on small graphs.
+
+### ⚠️ Sourcing: our MLX ports carry everything a CoreAI port needs
+
+**Found 2026-08-30, and it changes how a port should start.** The `mlx-*-swift` packages under
+`mlxengine-image/PROD/` ship an `oracle/` rig containing:
+
+- `oracle/weights/*.pth` — the **ORIGINAL PyTorch checkpoints**, already downloaded, not just
+  MLX-converted safetensors
+- `oracle/upstream/` — the upstream model source, importable
+- `oracle/goldens/*.npy` + `MANIFEST.txt` — **reference activations from an independent PyTorch
+  run**, with the exact constructor arguments recorded
+
+Available today: `drunet`, `scunet`, `restormer`, `fftformer`, `gfpgan`, `restoreformer`,
+`cidnet`.
+
+Why this matters beyond convenience:
+
+1. **It satisfies the no-random-weights rule for free** (→ `precision.md`). Every one is a real
+   trained checkpoint.
+2. **The goldens are a better gate than a self-authored reference.** A parity number checked
+   against a reference computed in the same script that tests it shares any bug in that script.
+   The DRUNet gate came back `inf dB` — bit-exact against a run we did not author today.
+3. **It gives the MLX sibling for the fit journal at zero extra cost** — same weights, both
+   runtimes.
+
+**Start a CoreAI port by checking `mlxengine-image/PROD/mlx-*-swift/oracle/` before downloading
+anything.** Note the *bundled* `Sources/**/Resources/*.safetensors` are MLX-layout
+(`O,H,W,I` channels-last, renamed keys) and would need conversion — the `oracle/weights/*.pth`
+are the ones to use.
+
 ## Practical guidance while the cause is unknown
 
 ## What Wave 2 establishes for the fit journal
@@ -132,6 +180,54 @@ guessed from correlation, two already wrong: **stop guessing and get the instrum
   is not yet explained. Plain BatchNorm+ReLU nets are safe; SE-bearing nets are not.
 - Therefore: **run the fp16 parity check per model. Do not generalise from the family name** —
   two structural predictors have now been tested and both were wrong.
+
+## DRUNet — a full port with real weights and an INDEPENDENT gate
+
+The first Wave 2 model ported end to end from our own assets rather than timm.
+
+| | value |
+|---|---|
+| fp32 torch vs the oracle rig's golden | **inf dB (bit-exact)** |
+| fp16 export | rank 4, 65.3 MB, **0 convert-time ANE hits** |
+| CPU / GPU / **ANE** parity vs golden | 55.73 / 75.34 / **64.12 dB** |
+| ANE rejections | **0** — fully eligible, 2.06 s cold specialization |
+| latency | ANE 3.198 ms vs GPU 2.642 ms (ANE *slower* here — 32.6M params) |
+
+DRUNet is a plain conv + ReLU residual UNet with **no BatchNorm**, strideconv down and
+`ConvTranspose2d` up. It passes comfortably, consistent with the family split above, and
+`ConvTranspose2d` converted without hitting upstream `#57`/`#58` at this configuration.
+
+Note the ANE is **slower than the GPU lane** on this one, unlike the small classifiers (which
+were 2–5.7× faster). Model size flips it: the ANE's advantage is largest on small graphs.
+
+### ⚠️ Sourcing: our MLX ports carry everything a CoreAI port needs
+
+**Found 2026-08-30, and it changes how a port should start.** The `mlx-*-swift` packages under
+`mlxengine-image/PROD/` ship an `oracle/` rig containing:
+
+- `oracle/weights/*.pth` — the **ORIGINAL PyTorch checkpoints**, already downloaded, not just
+  MLX-converted safetensors
+- `oracle/upstream/` — the upstream model source, importable
+- `oracle/goldens/*.npy` + `MANIFEST.txt` — **reference activations from an independent PyTorch
+  run**, with the exact constructor arguments recorded
+
+Available today: `drunet`, `scunet`, `restormer`, `fftformer`, `gfpgan`, `restoreformer`,
+`cidnet`.
+
+Why this matters beyond convenience:
+
+1. **It satisfies the no-random-weights rule for free** (→ `precision.md`). Every one is a real
+   trained checkpoint.
+2. **The goldens are a better gate than a self-authored reference.** A parity number checked
+   against a reference computed in the same script that tests it shares any bug in that script.
+   The DRUNet gate came back `inf dB` — bit-exact against a run we did not author today.
+3. **It gives the MLX sibling for the fit journal at zero extra cost** — same weights, both
+   runtimes.
+
+**Start a CoreAI port by checking `mlxengine-image/PROD/mlx-*-swift/oracle/` before downloading
+anything.** Note the *bundled* `Sources/**/Resources/*.safetensors` are MLX-layout
+(`O,H,W,I` channels-last, renamed keys) and would need conversion — the `oracle/weights/*.pth`
+are the ones to use.
 
 ## Practical guidance while the cause is unknown
 
