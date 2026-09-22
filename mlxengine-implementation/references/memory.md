@@ -115,6 +115,7 @@ let m = await engine.memory
 // m.underPressure: Bool                                    — declared resident ≥ high-watermark
 // m.realResidentBytes: UInt64?                             — actual phys_footprint (nil if unavailable)
 // m.underRealPressure: Bool                                — actual footprint over the watermark (R-MEM-1)
+// m.externalBytes / m.externalTenants                      — what external GPU tenants declare (≥1.43.0)
 ```
 
 `engine.residentPackages` gives the package-keyed view (`[PackageID: UInt64]`). Note the engine reserves
@@ -160,6 +161,47 @@ budget. App-level implications:
 - **Surface it.** If your app keeps several models warm, reading `underRealPressure` lets you tell the
   user "memory is tight, models may reload on demand" instead of them being surprised by a reload pause.
 
+## External GPU tenants — declare the GPU memory your app holds outside the engine (≥ 1.43.0)
+
+If the app itself holds GPU memory in-process — a Metal compositor/canvas, a renderer, big
+`MTLTexture` caches — the engine cannot see it and will admit models into memory that is already
+taken (measured: a 24 MP Forge Canvas document, ~1.36 GB, left `admissibility` unchanged —
+AB-R-0289). Declare it:
+
+```swift
+// App layer — the ONLY place that knows both the engine and the tenant.
+let tenant = await engine.registerExternalTenant(
+    id: "canvas", persistentBytes: fp.persistent, transientBytes: fp.transient,
+    onShrinkRequest: { [weak canvas, weak self] requested in
+        guard let canvas else { return 0 }
+        // Cheapest release first (Forge: CanvasRenderer.relieve(.warning), then .critical).
+        var freed = await canvas.relieve(.warning)
+        if freed < requested { freed += await canvas.relieve(.critical) }
+        self?.redeclare()                                          // update BEFORE returning
+        return freed
+    })
+canvas.onFootprintChange = { [tenant] fp in                        // any thread, synchronous
+    tenant.update(persistentBytes: fp.persistent, transientBytes: fp.transient)
+}
+```
+
+- **Split it like a package.** Persistent = held between uses (texture caches, pools — counts in
+  residency). Transient = what one render adds (staging, readback) — the engine ADDS it on top of the
+  model reserve, because your render can overlap a model's peak.
+- **Keep the tenant module engine-agnostic.** Only the handle crosses: numbers in, a closure out. Don't
+  make the canvas/renderer package import MLXServeCore.
+- **Keep the handle alive** for as long as the memory is held (a stored property) — dropping it
+  withdraws the tenant. Capture it and your model objects **weakly** in the shrink handler; the engine
+  holds the handler.
+- **The shrink handler must `update` the declaration before it returns** — the engine re-reads the
+  declaration, not the return value. Releasing nothing is fine (return 0); it is asked once per
+  admission, largest tenant first, before any model is evicted, and bounded by
+  `ExternalTenantPolicy.shrinkTimeout` (2 s default) — don't do slow work there.
+- **Handle the new refusal.** `EngineError.externalTenantsHoldMemory` means the model fits the
+  machine but not beside what your tenant still holds — offer "close the document / free canvas
+  memory", not "pick a smaller model" (that's `exceedsMemoryBudget`).
+- Show `memory.externalBytes` in the HUD so the user can see why availability dropped.
+
 ## Recognizing the anti-pattern (review checklist)
 
 - [ ] A hardcoded budget fraction at 0.9+ "to fit the big model," starving the OS — or no governor at
@@ -173,12 +215,15 @@ budget. App-level implications:
 - [ ] Setting `availableBudgetBytes` on a `BudgetAware` config from the app (the engine owns it), or
       hardcoding a package's heaviest dtype so it can't adapt under pressure.
 - [ ] Pointing the model store at a slow/external volume, making mmap paging sluggish on every use.
+- [ ] An app holding large in-process GPU memory (canvas/compositor textures) without an
+      `ExternalTenant` declaration — or a shrink handler that frees memory but never `update`s.
 
 ## Verify against source
 
 `mlx-engine-swift/Sources/MLXServeCore/MemoryGovernor.swift` (`forDevice`, `footprint(for:quant:hint:)`,
 `MemorySnapshot`), `Sources/MLXServeCore/MLXServeEngine.swift` (`admissibility` overloads, `memory`,
-`residentPackages`, `makeHeadroom` real-pressure pass), `Sources/MLXServeCore/HostMemory.swift`,
+`residentPackages`, `makeHeadroom` real-pressure pass, `registerExternalTenant`),
+`Sources/MLXServeCore/ExternalTenant.swift`, `Sources/MLXServeCore/HostMemory.swift`,
 `Sources/MLXToolKit/{RequirementsManifest,PackageConfiguration}.swift` (`QuantFootprint` incl.
 `peakActivationBytes`, `QuantConfigured`, `FootprintConfigured` incl. `peakActivationBytesHint`,
 `BudgetAware`). See also the engine `docs/architecture.md` R-MEM-1 spec and the package-author
