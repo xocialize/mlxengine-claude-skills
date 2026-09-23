@@ -172,11 +172,15 @@ AB-R-0289). Declare it:
 // App layer — the ONLY place that knows both the engine and the tenant.
 let tenant = await engine.registerExternalTenant(
     id: "canvas", persistentBytes: fp.persistent, transientBytes: fp.transient,
-    onShrinkRequest: { [weak canvas, weak self] requested in
+    onShrinkRequest: { [weak canvas, weak self] (request: ExternalShrinkRequest) in   // ≥ 1.46.0
         guard let canvas else { return 0 }
         // Cheapest release first (Forge: CanvasRenderer.relieve(.warning), then .critical).
         var freed = await canvas.relieve(.warning)
-        if freed < requested { freed += await canvas.relieve(.critical) }
+        // Drop caches only when a model is being ADMITTED: on a run, the canvas would
+        // re-upload them next frame (AB-R-0303 / AB-R-0304).
+        if request.reason == .admission, freed < request.requestedBytes {
+            freed += await canvas.relieve(.critical)
+        }
         self?.redeclare()                                          // update BEFORE returning
         return freed
     })
@@ -211,6 +215,17 @@ canvas.onFootprintChange = { [tenant] fp in                        // any thread
   pressure lasts, so keep the handler cheap when there is nothing left to shed. That path never
   evicts a model. Your own OS memory-pressure handling still matters for pressure BETWEEN runs;
   the engine asks only when it is about to do work.
+- **Use the reason to decide what to shed (≥ 1.46.0, AB-A-0097).** Register the request form
+  (`(ExternalShrinkRequest) async -> UInt64`: `requestedBytes`, `reason`, `package`) and branch on
+  `reason`. `.admission`: a model is being admitted (a load, or a run whose reserve no longer fits
+  the declared budget) and the alternative is evicting or refusing it, so drop caches if that
+  closes the gap. `.runUnderRealPressure`: the steady-state run path, which evicts nothing and
+  loads nothing, so shed only what you will not need again right away (working sets, a
+  lower-footprint mode). Never drop a cache you will re-upload on the next frame: on the 24 GB
+  M5 Pro that bought nothing (pressure never cleared) and cost a ~350 ms re-upload frame per
+  episode. The bytes-only `requested in` form still works unchanged but cannot tell the two apart.
+  The request-form overload is disfavored: a closure that could be either (`{ _ in 0 }`) resolves
+  to the bytes-only form, so annotate the parameter (`(request: ExternalShrinkRequest) in`).
 - **Handle the new refusal.** `EngineError.externalTenantsHoldMemory` means the model fits the
   machine but not beside what your tenant still holds — offer "close the document / free canvas
   memory", not "pick a smaller model" (that's `exceedsMemoryBudget`).
