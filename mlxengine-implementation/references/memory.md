@@ -197,6 +197,14 @@ canvas.onFootprintChange = { [tenant] fp in                        // any thread
   declaration, not the return value. Releasing nothing is fine (return 0); it is asked once per
   admission, largest tenant first, before any model is evicted, and bounded by
   `ExternalTenantPolicy.shrinkTimeout` (2 s default) — don't do slow work there.
+- **Real pressure asks your tenant too (≥ 1.44.0).** When the process's real `phys_footprint` is
+  over the watermark, the engine asks tenants for the overage BEFORE evicting an idle model, and
+  credits the bytes your declaration dropped against the real reading for that admission — so the
+  1–250 ms before Metal returns freed textures to the OS no longer costs you a model reload. What
+  this needs from you is the same contract: `update` before returning, honestly. A declaration that
+  drops without the memory actually being released gets a model kept resident on a reading that
+  never comes down. On 1.43.0 only the declared-byte pass asked; the real-pressure pass evicted
+  idle models instead.
 - **Handle the new refusal.** `EngineError.externalTenantsHoldMemory` means the model fits the
   machine but not beside what your tenant still holds — offer "close the document / free canvas
   memory", not "pick a smaller model" (that's `exceedsMemoryBudget`).
