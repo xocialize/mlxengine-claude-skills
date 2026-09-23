@@ -205,6 +205,12 @@ canvas.onFootprintChange = { [tenant] fp in                        // any thread
   drops without the memory actually being released gets a model kept resident on a reading that
   never comes down. On 1.43.0 only the declared-byte pass asked; the real-pressure pass evicted
   idle models instead.
+- **Steady state is covered too (≥ 1.45.0).** On 1.44.0 the ask happened only when a model was
+  admitted, so one model running again and again beside your canvas never triggered it. From 1.45.0,
+  every run under real pressure asks your tenant first. That costs one handler call per run while
+  pressure lasts, so keep the handler cheap when there is nothing left to shed. That path never
+  evicts a model. Your own OS memory-pressure handling still matters for pressure BETWEEN runs;
+  the engine asks only when it is about to do work.
 - **Handle the new refusal.** `EngineError.externalTenantsHoldMemory` means the model fits the
   machine but not beside what your tenant still holds — offer "close the document / free canvas
   memory", not "pick a smaller model" (that's `exceedsMemoryBudget`).
